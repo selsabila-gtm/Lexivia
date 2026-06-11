@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-
+import { BellDot } from "lucide-react";
 const API = "http://127.0.0.1:8000";
 
 function authHeaders() {
@@ -371,7 +371,7 @@ export default function NotificationPopup() {
         onMouseEnter={e => { if (!open) e.currentTarget.style.background = "#f0f1f4"; }}
         onMouseLeave={e => { if (!open) e.currentTarget.style.background = "transparent"; }}
       >
-        🔔
+        <BellDot size={18} strokeWidth={2} />
         {unread > 0 && (
           <span style={{
             position: "absolute", top: 4, right: 4,

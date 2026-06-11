@@ -16,9 +16,16 @@ import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
-from models import Competition, CompetitionDataset, CompetitionPrompt, CompetitionOrganizer
 from supabase_client import supabase
-from .utils import get_db, get_current_user
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from sqlalchemy import func
+import csv
+import io
+
+from models import Competition, DataSample, UserProfile, CompetitionParticipant, CompetitionDataset, CompetitionPrompt, CompetitionOrganizer
+from .utils import get_db, get_current_user, get_icon_for_task
 
 router = APIRouter(tags=["datasets"])
 STORAGE_BUCKET = "competition-datasets"
@@ -634,3 +641,202 @@ def delete_dataset(
     db.delete(record)
     db.commit()
     return {"deleted": dataset_id}
+
+@router.get("/datasets/hub")
+def list_hub_datasets(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Returns one dataset card per competition that has contributed data_samples.
+    Aggregates participant counts, sample counts, and quality scores.
+    """
+
+    # Competitions that have at least one sample
+    rows = (
+        db.query(
+            Competition,
+            func.count(DataSample.id).label("total_samples"),
+            func.count(DataSample.id).filter(DataSample.status == "validated").label("validated_samples"),
+            func.count(DataSample.id).filter(DataSample.status == "flagged").label("flagged_samples"),
+            func.avg(DataSample.quality_score).label("avg_quality"),
+            func.count(func.distinct(DataSample.contributor_id)).label("contributors"),
+        )
+        .join(DataSample, DataSample.competition_id == Competition.id)
+        .filter(Competition.is_draft == False)
+        .group_by(Competition.id)
+        .order_by(func.count(DataSample.id).desc())
+        .all()
+    )
+
+    result = []
+    for comp, total, validated, flagged, avg_q, contributors in rows:
+        task_type = (comp.task_type or "TEXT_CLASSIFICATION").upper()
+
+        # Derive a human-readable title for the dataset
+        dataset_title = f"{comp.title} Dataset"
+
+        # Description: use the competition description, trimmed
+        description = (comp.description or "")[:200].rstrip()
+        if len(comp.description or "") > 200:
+            description += "…"
+
+        # Compute latest activity
+        latest = (
+            db.query(func.max(DataSample.submitted_at))
+            .filter(DataSample.competition_id == comp.id)
+            .scalar()
+        )
+
+        result.append({
+            "id": comp.id,
+            "title": dataset_title,
+            "description": description,
+            "source_competition_id": comp.id,
+            "source_competition_title": comp.title,
+            "task_type": task_type,
+            "icon": get_icon_for_task(task_type),
+            "total_samples": total,
+            "validated_samples": validated,
+            "flagged_samples": flagged,
+            "pending_samples": total - validated - flagged,
+            "contributors": contributors,
+            "avg_quality": round(float(avg_q), 3) if avg_q else None,
+            "last_updated": str(latest) if latest else None,
+            # Export format hint
+            "formats": ["jsonl", "csv"],
+        })
+
+    return result
+
+
+@router.get("/datasets/hub/{competition_id}/export")
+def export_dataset(
+    competition_id: str,
+    format: str = Query("jsonl", regex="^(jsonl|csv)$"),
+    status_filter: str = Query("all", regex="^(all|validated|flagged|pending)$"),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Streams all data_samples for a competition as JSONL or CSV.
+    Defaults to all statuses; pass ?status_filter=validated to get only clean data.
+    """
+    comp = db.query(Competition).filter(Competition.id == competition_id).first()
+    if not comp:
+        raise HTTPException(status_code=404, detail="Competition not found")
+
+    query = db.query(DataSample, UserProfile).outerjoin(
+        UserProfile, UserProfile.user_id == DataSample.contributor_id
+    ).filter(DataSample.competition_id == competition_id)
+
+    if status_filter != "all":
+        query = query.filter(DataSample.status == status_filter)
+
+    rows = query.order_by(DataSample.submitted_at.asc()).all()
+
+    safe_title = comp.title.replace(" ", "_").replace("/", "-")[:40]
+    timestamp = datetime.utcnow().strftime("%Y%m%d")
+
+    if format == "jsonl":
+        def generate_jsonl():
+            for sample, profile in rows:
+                record = {
+                    "id": str(sample.id),
+                    "competition_id": competition_id,
+                    "competition_title": comp.title,
+                    "contributor": (profile.full_name if profile else None) or "Anonymous",
+                    "text_content": sample.text_content,
+                    "annotation": sample.annotation,
+                    "status": sample.status,
+                    "quality_score": sample.quality_score,
+                    "task_type": sample.task_type,
+                    "submitted_at": str(sample.submitted_at),
+                }
+                yield json.dumps(record, ensure_ascii=False) + "\n"
+
+        filename = f"{safe_title}_{timestamp}.jsonl"
+        return StreamingResponse(
+            generate_jsonl(),
+            media_type="application/x-ndjson",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    else:  # CSV
+        def generate_csv():
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow([
+                "id", "competition_id", "competition_title", "contributor",
+                "text_content", "annotation", "status", "quality_score",
+                "task_type", "submitted_at",
+            ])
+            yield output.getvalue()
+            output.seek(0)
+            output.truncate(0)
+
+            for sample, profile in rows:
+                writer.writerow([
+                    str(sample.id),
+                    competition_id,
+                    comp.title,
+                    (profile.full_name if profile else None) or "Anonymous",
+                    sample.text_content or "",
+                    json.dumps(sample.annotation) if sample.annotation else "{}",
+                    sample.status or "",
+                    sample.quality_score or "",
+                    sample.task_type or "",
+                    str(sample.submitted_at or ""),
+                ])
+                yield output.getvalue()
+                output.seek(0)
+                output.truncate(0)
+
+        filename = f"{safe_title}_{timestamp}.csv"
+        return StreamingResponse(
+            generate_csv(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+
+@router.get("/datasets/hub/{competition_id}/stats")
+def dataset_hub_stats(
+    competition_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Detailed stats for a single dataset card (label distribution, top contributors)."""
+    comp = db.query(Competition).filter(Competition.id == competition_id).first()
+    if not comp:
+        raise HTTPException(status_code=404, detail="Competition not found")
+
+    # Top contributors
+    top = (
+        db.query(DataSample.contributor_id, func.count(DataSample.id).label("cnt"))
+        .filter(DataSample.competition_id == competition_id)
+        .group_by(DataSample.contributor_id)
+        .order_by(func.count(DataSample.id).desc())
+        .limit(5)
+        .all()
+    )
+    top_contributors = []
+    for uid, cnt in top:
+        profile = db.query(UserProfile).filter(UserProfile.user_id == uid).first()
+        name = (profile.full_name if profile else None) or "Anonymous"
+        top_contributors.append({"name": name, "count": cnt})
+
+    # Status distribution
+    status_rows = (
+        db.query(DataSample.status, func.count(DataSample.id))
+        .filter(DataSample.competition_id == competition_id)
+        .group_by(DataSample.status)
+        .all()
+    )
+    status_dist = {s: c for s, c in status_rows}
+
+    return {
+        "competition_id": competition_id,
+        "top_contributors": top_contributors,
+        "status_distribution": status_dist,
+    }

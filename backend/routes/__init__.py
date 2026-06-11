@@ -13,6 +13,7 @@ from .notifications import router as notifications_router
 from .submissions import router as submissions_router
 from .scraping import router as scraping_router
 from .experiment_registry import router as registry_router
+
 router = APIRouter()
 
 router.include_router(auth_router)

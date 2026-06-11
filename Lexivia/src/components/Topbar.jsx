@@ -1,7 +1,13 @@
 import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import NotificationPopup from "./NotificationPopup";   // ← new
-
+import {
+    User,
+    Settings,
+    Search,
+    X,
+    BellDot 
+} from "lucide-react";
 function Topbar({ title = "", subtitle = "", showBrowseButton = false }) {
     const navigate = useNavigate();
     const location = useLocation();
@@ -60,12 +66,10 @@ function Topbar({ title = "", subtitle = "", showBrowseButton = false }) {
                     {/* NOTIFICATION BELL — now uses the popup component */}
                     <NotificationPopup />
 
-                    <button onClick={() => navigate("/settings")} style={iconBtn}>
-                        ☰
-                    </button>
+                   
 
                     <button onClick={() => navigate("/profile")} style={iconBtn}>
-                        👤
+                        <User size={18} strokeWidth={2} />
                     </button>
                 </div>
             </div>
@@ -183,5 +187,17 @@ const browseBtn = {
     fontWeight: 700,
     cursor: "pointer",
 };
-
+const profileBtn = {
+    width: "40px",
+    height: "40px",
+    borderRadius: "50%",
+    border: "1px solid #e8ebf3",
+    background: "#ffffff",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    color: "#334155",
+    transition: "all 0.2s ease",
+};
 export default Topbar;
