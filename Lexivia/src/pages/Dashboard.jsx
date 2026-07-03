@@ -4,6 +4,18 @@ import Sidebar from "../components/Sidebar";
 import Topbar from "../components/Topbar";
 import "./Dashboard.css";
 import { supabase } from "../config/supabase";
+import {
+    BarChart3,
+    FileText,
+    Languages,
+    Headphones,
+    Tags,
+    Image,
+    Database,
+    MessageSquare,
+    Trophy,
+} from "lucide-react";
+
 
 function statusClass(status) {
     const s = String(status || "").toLowerCase();
@@ -38,6 +50,33 @@ function normalizeRecentItem(item, index) {
         sync: item?.sync || "Recently",
         icon: item?.icon || "🏆",
     };
+}
+
+function taskKey(type) {
+    return String(type || "GENERAL")
+        .toUpperCase()
+        .replace(/[\s-]+/g, "_");
+}
+
+function taskClass(type) {
+    return taskKey(type).toLowerCase().replace(/_/g, "-");
+}
+
+const TASK_ICONS = {
+    SENTIMENT_ANALYSIS: BarChart3,
+    SUMMARIZATION: FileText,
+    TRANSLATION: Languages,
+    AUDIO_EVENT_DETECTION: Headphones,
+    TEXT_CLASSIFICATION: Tags,
+    IMAGE_CLASSIFICATION: Image,
+    DATASET: Database,
+    QUESTION_ANSWERING: MessageSquare,
+    GENERAL: Trophy,
+};
+
+function TaskIcon({ type }) {
+    const Icon = TASK_ICONS[taskKey(type)] || Trophy;
+    return <Icon size={20} strokeWidth={2.3} />;
 }
 
 function Dashboard() {
@@ -291,7 +330,9 @@ function Dashboard() {
                                             style={{ cursor: "pointer" }}
                                         >
                                             <div className="recent-main">
-                                                <div className="recent-icon">{item.icon}</div>
+                                                <div className={`recent-icon ${taskClass(item.type)}`}>
+    <TaskIcon type={item.type} />
+</div>
                                                 <div>
                                                     <h3>{item.title}</h3>
                                                     <p>{item.type}</p>

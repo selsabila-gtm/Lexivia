@@ -222,15 +222,64 @@
 .recent-icon {
   width: 44px;
   height: 44px;
-  border-radius: 10px;
-  background: #e8edfb;
-  color: #2547c0;
+  border-radius: 12px;
+  background: #eef2ff;
+  color: #2d5cf6;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
-  font-weight: 700;
   flex-shrink: 0;
+}
+
+.recent-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Task-specific colors */
+.recent-icon.sentiment-analysis {
+  background: #eef2ff;
+  color: #2d5cf6;
+}
+
+.recent-icon.summarization {
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.recent-icon.translation {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.recent-icon.audio-event-detection {
+  background: #fdf2f8;
+  color: #be185d;
+}
+
+.recent-icon.text-classification {
+  background: #f5f3ff;
+  color: #6d28d9;
+}
+
+.recent-icon.image-classification {
+  background: #ecfeff;
+  color: #0e7490;
+}
+
+.recent-icon.dataset {
+  background: #f8fafc;
+  color: #475569;
+}
+
+.recent-icon.question-answering {
+  background: #fefce8;
+  color: #a16207;
+}
+
+.recent-icon.general {
+  background: #eef2ff;
+  color: #2d5cf6;
 }
 
 .recent-main h3 {
