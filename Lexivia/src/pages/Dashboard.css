@@ -338,3 +338,22 @@
     gap: 10px;
   }
 }
+.recent-icon.ner {
+  background: #f5f3ff;
+  color: #6d28d9;
+}
+
+.recent-icon.audio-synthesis {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.recent-icon.audio-transcription {
+  background: #f0fdfa;
+  color: #0f766e;
+}
+
+.recent-icon.speech-emotion {
+  background: #fff1f2;
+  color: #be123c;
+}
