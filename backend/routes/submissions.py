@@ -436,3 +436,111 @@ def get_leaderboard(
         }
         for i, s in enumerate(ranked)
     ]
+
+@router.get("/competitions/{competition_id}/leaderboard-rich")
+def get_leaderboard_rich(
+    competition_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    from models_teams import Team
+
+    competition = db.query(Competition).filter(Competition.id == competition_id).first()
+
+    if not competition:
+        raise HTTPException(status_code=404, detail="Competition not found")
+
+    primary_metric = _resolve_metric(competition)
+    higher_is_better = METRIC_HIGHER_IS_BETTER.get(primary_metric, True)
+
+    all_done = (
+        db.query(Submission)
+        .filter(
+            Submission.competition_id == competition_id,
+            Submission.status == "done",
+        )
+        .all()
+    )
+
+    needs_commit = False
+
+    for submission in all_done:
+        correct_team_id = _get_user_team_id(str(submission.user_id), competition_id, db)
+
+        if str(submission.team_id or "") != str(correct_team_id or ""):
+            submission.team_id = correct_team_id
+            needs_commit = True
+
+    if needs_commit:
+        db.commit()
+
+    best_by_key: dict[str, Submission] = {}
+
+    for submission in all_done:
+        key = str(submission.team_id) if submission.team_id else str(submission.user_id)
+
+        if key not in best_by_key:
+            best_by_key[key] = submission
+            continue
+
+        old_score = float(best_by_key[key].score or 0)
+        new_score = float(submission.score or 0)
+
+        if higher_is_better and new_score > old_score:
+            best_by_key[key] = submission
+        elif not higher_is_better and new_score < old_score:
+            best_by_key[key] = submission
+
+    ranked = sorted(
+        best_by_key.values(),
+        key=lambda s: float(s.score or 0),
+        reverse=higher_is_better,
+    )
+
+    entries = []
+
+    for index, submission in enumerate(ranked):
+        profile = (
+            db.query(UserProfile)
+            .filter(UserProfile.user_id == str(submission.user_id))
+            .first()
+        )
+
+        if profile and profile.full_name:
+            user_name = profile.full_name
+        elif profile and profile.email:
+            user_name = profile.email
+        else:
+            user_name = str(submission.user_id)
+
+        team_name = None
+
+        if submission.team_id:
+            try:
+                team = db.query(Team).filter(Team.id == int(submission.team_id)).first()
+                team_name = team.name if team else f"Team #{submission.team_id}"
+            except Exception:
+                team_name = f"Team #{submission.team_id}"
+
+        entries.append(
+            {
+                "rank": index + 1,
+                "user_id": str(submission.user_id),
+                "user_name": user_name,
+                "team_id": submission.team_id,
+                "team_name": team_name,
+                "score": float(submission.score) if submission.score is not None else None,
+                "metric_name": submission.metric_name or primary_metric,
+                "submission_id": submission.id,
+                "submitted_at": submission.submitted_at,
+                "evaluated_at": submission.evaluated_at,
+            }
+        )
+
+    return {
+        "competition_id": competition_id,
+        "competition_title": competition.title,
+        "primary_metric": primary_metric,
+        "higher_is_better": higher_is_better,
+        "entries": entries,
+    }
