@@ -3,6 +3,20 @@ import { useNavigate, useLocation } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import Topbar from "../components/Topbar";
 import "./Competitions.css";
+import {
+  BarChart3,
+  FileText,
+  Languages,
+  Headphones,
+  Tags,
+  Image,
+  Database,
+  MessageSquare,
+  Trophy,
+  Mic,
+  Volume2,
+  Smile,
+} from "lucide-react";
 
 const PAGE_SIZE = 10;
 
@@ -34,6 +48,62 @@ const TASK_DISPLAY_LABELS = {
   SPEECH_EMOTION: "Speech Emotion",
   AUDIO_EVENT_DETECTION: "Audio Event Detection",
 };
+
+function normalizeTaskIconKey(type) {
+  return String(type || "GENERAL")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
+}
+
+const TASK_ICONS = {
+  TEXT_CLASSIFICATION: Tags,
+  NER: Tags,
+  SENTIMENT_ANALYSIS: BarChart3,
+  TRANSLATION: Languages,
+  QUESTION_ANSWERING: MessageSquare,
+  SUMMARIZATION: FileText,
+  AUDIO_SYNTHESIS: Volume2,
+  AUDIO_TRANSCRIPTION: Mic,
+  SPEECH_EMOTION: Smile,
+  AUDIO_EVENT_DETECTION: Headphones,
+  IMAGE_CLASSIFICATION: Image,
+  DATASET: Database,
+  GENERAL: Trophy,
+};
+
+function taskTone(type) {
+  const key = normalizeTaskIconKey(type);
+  const tones = {
+    TEXT_CLASSIFICATION: { bg: "#eef3ff", color: "#3b5bdb" },
+    NER: { bg: "#fff0f6", color: "#c2255c" },
+    SENTIMENT_ANALYSIS: { bg: "#fff9db", color: "#e67700" },
+    TRANSLATION: { bg: "#e6fcf5", color: "#0ca678" },
+    QUESTION_ANSWERING: { bg: "#f3f0ff", color: "#7048e8" },
+    SUMMARIZATION: { bg: "#e8f5e9", color: "#2e7d32" },
+    AUDIO_SYNTHESIS: { bg: "#e3f2fd", color: "#1565c0" },
+    AUDIO_TRANSCRIPTION: { bg: "#fce4ec", color: "#ad1457" },
+    SPEECH_EMOTION: { bg: "#fff3e0", color: "#e65100" },
+    AUDIO_EVENT_DETECTION: { bg: "#f1f8e9", color: "#33691e" },
+    IMAGE_CLASSIFICATION: { bg: "#eef2ff", color: "#4f46e5" },
+  };
+  return tones[key] || { bg: "#f1f3f5", color: "#495057" };
+}
+
+function CompetitionTaskIcon({ type }) {
+  const Icon = TASK_ICONS[normalizeTaskIconKey(type)] || Trophy;
+  const tone = taskTone(type);
+
+  return (
+    <span
+      className="competition-task-icon"
+      style={{ background: tone.bg, color: tone.color }}
+      aria-hidden="true"
+    >
+      <Icon size={18} strokeWidth={2.35} />
+    </span>
+  );
+}
 
 function normalizeStatus(status) {
   return String(status || "").trim().toUpperCase();
@@ -485,7 +555,10 @@ function Competitions() {
                       className={item.muted ? "competition-card muted" : "competition-card"}
                     >
                       <div className="competition-top">
-                        <span className="competition-category">{categoryLabel}</span>
+                        <div className="competition-category-wrap">
+                          <CompetitionTaskIcon type={item.category} />
+                          <span className="competition-category">{categoryLabel}</span>
+                        </div>
 
                         <div className="competition-chip-row">
                           <RoleChip role={item.user_role} />
