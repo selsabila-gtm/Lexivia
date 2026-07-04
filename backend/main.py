@@ -1,14 +1,30 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
 from database import engine, Base
+
 import models
-import models_teams          # registers Team / TeamMember / TeamInvitation tables
-from routes import router    # single aggregated router from routes/
-from user_profile import router as profile_router, competitions_router
+import models_teams
 import models_versioning
+
+from routes import router
+from user_profile import router as profile_router, competitions_router
+
+
 app = FastAPI(title="Precision Architect API")
 
-# CORS for React frontend (registered ONCE)
+
+# Uploaded team pictures are served from:
+# http://127.0.0.1:8000/uploads/team_logos/filename.png
+UPLOAD_DIR = Path("uploads")
+TEAM_LOGOS_DIR = UPLOAD_DIR / "team_logos"
+TEAM_LOGOS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -20,12 +36,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Create tables on startup
+
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
 
-# Include all routers
+
 app.include_router(router)
 app.include_router(profile_router)
 app.include_router(competitions_router)

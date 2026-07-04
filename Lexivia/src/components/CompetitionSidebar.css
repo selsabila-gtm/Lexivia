@@ -157,3 +157,16 @@
 .csidebar-util .csidebar-icon {
     opacity: 1;
 }
+.csidebar-icon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+  flex-shrink: 0;
+}
+
+.csidebar-icon svg {
+  display: block;
+}

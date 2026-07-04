@@ -3,10 +3,16 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import './TeamDetailPage.css';
 
 const API = 'http://127.0.0.1:8000';
+const API_ORIGIN = API.replace(/\/$/, '');
 
 function authHeaders() {
   const token = localStorage.getItem('token');
   return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+}
+
+function authUploadHeaders() {
+  const token = localStorage.getItem('token');
+  return { Authorization: `Bearer ${token}` };
 }
 
 const ROLE_STYLES = {
@@ -52,6 +58,100 @@ function SkeletonBlock({ w = '100%', h = 14, mb = 10, radius = 6 }) {
     }} />
   );
 }
+
+function resolveTeamLogo(team) {
+  const logo = team?.logo_url || team?.logoUrl || team?.picture_url || team?.avatar_url;
+
+  if (!logo) return null;
+  if (logo.startsWith('http') || logo.startsWith('data:') || logo.startsWith('blob:')) {
+    return logo;
+  }
+
+  return `${API_ORIGIN}${logo.startsWith('/') ? logo : `/${logo}`}`;
+}
+
+function avatarHue(team) {
+  const raw = `${team?.id || ''}-${team?.name || 'team'}`;
+  let hash = 0;
+
+  for (let i = 0; i < raw.length; i++) {
+    hash = raw.charCodeAt(i) + ((hash << 5) - hash);
+  }
+
+  return Math.abs(hash) % 360;
+}
+
+function DefaultTeamLogo({ team }) {
+  return (
+    <div className="team-detail-logo-gradient" style={{ '--avatar-hue': avatarHue(team) }}>
+      <span>{initials(team?.name)}</span>
+    </div>
+  );
+}
+
+function TeamLogoUploader({ team, canEdit, uploading, removing, error, onUpload, onRemove }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const logoSrc = resolveTeamLogo(team);
+  const hasCustomLogo = Boolean(team?.logo_url || team?.logoUrl || team?.picture_url || team?.avatar_url);
+  const showImage = logoSrc && !imageFailed;
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [logoSrc]);
+
+  function handleFileChange(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (file) onUpload(file);
+  }
+
+  return (
+    <div className="team-logo-editor">
+      <div className="team-detail-logo">
+        {showImage ? (
+          <img
+            src={logoSrc}
+            alt={`${team?.name || 'Team'} logo`}
+            className="team-detail-logo-img"
+            onError={() => setImageFailed(true)}
+          />
+        ) : (
+          <div className="team-detail-logo-default">
+            <DefaultTeamLogo team={team} />
+          </div>
+        )}
+      </div>
+
+      {canEdit && (
+        <div className="logo-action-stack">
+          <label className={`logo-upload-btn${uploading || removing ? ' disabled' : ''}`}>
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              onChange={handleFileChange}
+              disabled={uploading || removing}
+            />
+            {uploading ? 'Uploading…' : hasCustomLogo ? 'Change picture' : 'Add picture'}
+          </label>
+
+          {hasCustomLogo && (
+            <button
+              type="button"
+              className="logo-remove-btn"
+              onClick={onRemove}
+              disabled={uploading || removing}
+            >
+              {removing ? 'Removing…' : 'Remove picture'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {error && <div className="logo-upload-error">{error}</div>}
+    </div>
+  );
+}
+
 
 // ── Remove member button ───────────────────────────────────────────────────────
 
@@ -308,6 +408,9 @@ export default function TeamDetailPage() {
   const [deleting, setDeleting]                   = useState(false);
 
   const [activeTab, setActiveTab] = useState('members');
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoRemoving, setLogoRemoving] = useState(false);
+  const [logoError, setLogoError] = useState(null);
 
   // ── Fetch ──────────────────────────────────────────────────────────────────
 
@@ -355,6 +458,79 @@ export default function TeamDetailPage() {
     } else {
       const data = await res.json().catch(() => ({}));
       alert('Failed to save: ' + (data.detail || 'Unknown error'));
+    }
+  }
+
+
+  async function handleLogoUpload(file) {
+    if (!file) return;
+
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      setLogoError('Only JPG, PNG, and WEBP images are allowed.');
+      return;
+    }
+
+    if (file.size > 2 * 1024 * 1024) {
+      setLogoError('Logo image must be smaller than 2MB.');
+      return;
+    }
+
+    setLogoUploading(true);
+    setLogoError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('logo', file);
+
+      const res = await fetch(`${API}/teams/${teamId}/logo`, {
+        method: 'POST',
+        headers: authUploadHeaders(),
+        body: formData,
+      });
+
+      if (res.status === 401) { navigate('/login'); return; }
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setLogoError(data.detail || 'Failed to upload logo.');
+        return;
+      }
+
+      setTeam(prev => ({ ...prev, logo_url: data.logo_url }));
+    } catch (err) {
+      setLogoError(err.message || 'Failed to upload logo.');
+    } finally {
+      setLogoUploading(false);
+    }
+  }
+
+
+
+  async function handleLogoRemove() {
+    setLogoRemoving(true);
+    setLogoError(null);
+
+    try {
+      const res = await fetch(`${API}/teams/${teamId}/logo`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
+
+      if (res.status === 401) { navigate('/login'); return; }
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setLogoError(data.detail || 'Failed to remove logo.');
+        return;
+      }
+
+      setTeam(prev => ({ ...prev, logo_url: null }));
+    } catch (err) {
+      setLogoError(err.message || 'Failed to remove logo.');
+    } finally {
+      setLogoRemoving(false);
     }
   }
 
@@ -476,6 +652,16 @@ export default function TeamDetailPage() {
       <div className="detail-body">
         {/* ── Team header ── */}
         <div className="team-header-section">
+          <TeamLogoUploader
+            team={team}
+            canEdit={isLeader}
+            uploading={logoUploading}
+            removing={logoRemoving}
+            error={logoError}
+            onUpload={handleLogoUpload}
+            onRemove={handleLogoRemove}
+          />
+
           <div className="team-header-left">
             <div className="team-tags">
               <span className="tag-chip">ID-{String(team.id).padStart(4, '0')}</span>
@@ -588,6 +774,7 @@ export default function TeamDetailPage() {
             <div className="stat-value-row">
               <span className="stat-value">{members.length}</span>
             </div>
+            <span className="stat-sub">Active team size</span>
           </div>
           <div className="stat-card">
             <span className="stat-label">LEADERS</span>
@@ -601,7 +788,7 @@ export default function TeamDetailPage() {
           </div>
           <div className="stat-card">
             <span className="stat-label">YOUR ROLE</span>
-            <span className="stat-value" style={{ fontSize: 20, letterSpacing: '-0.02em' }}>
+            <span className="stat-value stat-role-value">
               {currentUserRole
                 ? currentUserRole.charAt(0).toUpperCase() + currentUserRole.slice(1)
                 : '—'}
