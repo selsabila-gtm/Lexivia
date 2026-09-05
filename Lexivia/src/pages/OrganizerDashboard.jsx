@@ -3,6 +3,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import "./OrganizerDashboard.css";
 
+const API = "http://127.0.0.1:8000";
+
 function safeJson(value, fallback = []) {
     try {
         if (!value) return fallback;
@@ -17,8 +19,6 @@ function money(value) {
     if (value === null || value === undefined || value === "") return "TBD";
     return `$${Number(value).toLocaleString()}`;
 }
-
-const API = "http://127.0.0.1:8000";
 
 function getToken() {
     return (
@@ -56,36 +56,36 @@ function TopPerformersPanel({ competitionId }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
 
-    const fetchLeaderboard = useCallback(async (silent = false) => {
-        if (!silent) setLoading(true);
-        setError("");
+    const fetchLeaderboard = useCallback(
+        async (silent = false) => {
+            if (!silent) setLoading(true);
+            setError("");
 
-        try {
-            const res = await fetch(
-                `${API}/competitions/${competitionId}/leaderboard-rich`,
-                {
+            try {
+                const res = await fetch(`${API}/competitions/${competitionId}/leaderboard-rich`, {
                     headers: authHeader(),
+                });
+
+                if (res.status === 401) {
+                    setError("Session expired. Please log in again.");
+                    return;
                 }
-            );
 
-            if (res.status === 401) {
-                setError("Session expired. Please log in again.");
-                return;
+                const data = await res.json();
+
+                if (!res.ok) {
+                    throw new Error(data.detail || "Could not load leaderboard.");
+                }
+
+                setLeaderboard(data);
+            } catch (err) {
+                setError(err.message || "Could not load leaderboard.");
+            } finally {
+                if (!silent) setLoading(false);
             }
-
-            const data = await res.json();
-
-            if (!res.ok) {
-                throw new Error(data.detail || "Could not load leaderboard.");
-            }
-
-            setLeaderboard(data);
-        } catch (err) {
-            setError(err.message || "Could not load leaderboard.");
-        } finally {
-            if (!silent) setLoading(false);
-        }
-    }, [competitionId]);
+        },
+        [competitionId]
+    );
 
     useEffect(() => {
         fetchLeaderboard();
@@ -121,25 +121,18 @@ function TopPerformersPanel({ competitionId }) {
             ) : topEntries.length === 0 ? (
                 <div className="empty-state">
                     <strong>No leaderboard yet</strong>
-                    <p>
-                        Top teams will appear after model submissions are validated.
-                    </p>
+                    <p>Top teams will appear after model submissions are validated.</p>
                 </div>
             ) : (
                 <div className="top-performers-list">
                     {topEntries.map((entry, index) => {
                         const rank = entry.rank ?? index + 1;
-                        const name =
-                            entry.team_name ||
-                            entry.user_name ||
-                            "Unknown participant";
+                        const name = entry.team_name || entry.user_name || "Unknown participant";
 
                         return (
                             <div className="top-performer-card" key={entry.submission_id || rank}>
                                 <div className="top-performer-left">
-                                    <span className={`top-rank top-rank-${rank}`}>
-                                        #{rank}
-                                    </span>
+                                    <span className={`top-rank top-rank-${rank}`}>#{rank}</span>
 
                                     <div>
                                         <strong>{name}</strong>
@@ -170,6 +163,7 @@ function TopPerformersPanel({ competitionId }) {
 
             <button
                 className="full-btn"
+                type="button"
                 onClick={() => navigate(`/competitions/${competitionId}/leaderboard`)}
             >
                 View Full Leaderboard
@@ -185,35 +179,81 @@ function OrganizerDashboard() {
     const [competition, setCompetition] = useState(null);
     const [monitoring, setMonitoring] = useState(null);
     const [loading, setLoading] = useState(true);
+
+    const [datasets, setDatasets] = useState([]);
+    const [datasetsLoading, setDatasetsLoading] = useState(false);
+
     const [joinRequests, setJoinRequests] = useState([]);
     const [requestsLoading, setRequestsLoading] = useState(false);
-    ;
 
     const token = getToken();
 
-    const fetchJoinRequests = async () => {
+    const fetchDatasets = useCallback(async () => {
         if (!token) return;
-        setRequestsLoading(true);
+
+        setDatasetsLoading(true);
+
         try {
-            const res = await fetch(
-                `http://127.0.0.1:8000/competitions/${competitionId}/join-requests`,
-                { headers: { Authorization: `Bearer ${token}` } }
-            );
-            if (res.ok) setJoinRequests(await res.json());
-        } catch (e) {
-            console.error(e);
+            const res = await fetch(`${API}/competitions/${competitionId}/datasets`, {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
+            });
+
+            if (!res.ok) {
+                throw new Error("Could not load datasets");
+            }
+
+            const data = await res.json();
+            setDatasets(Array.isArray(data) ? data : []);
+        } catch (error) {
+            console.error(error);
+            setDatasets([]);
+        } finally {
+            setDatasetsLoading(false);
+        }
+    }, [competitionId, token]);
+
+    const fetchJoinRequests = useCallback(async () => {
+        if (!token) return;
+
+        setRequestsLoading(true);
+
+        try {
+            const res = await fetch(`${API}/competitions/${competitionId}/join-requests`, {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
+            });
+
+            if (res.ok) {
+                const data = await res.json();
+                setJoinRequests(Array.isArray(data) ? data : []);
+            }
+        } catch (error) {
+            console.error(error);
         } finally {
             setRequestsLoading(false);
         }
-    };
+    }, [competitionId, token]);
 
     const handleJoinRequestAction = async (requestId, action) => {
         try {
             const res = await fetch(
-                `http://127.0.0.1:8000/competitions/${competitionId}/join-requests/${requestId}/${action}`,
-                { method: "POST", headers: { Authorization: `Bearer ${token}` } }
+                `${API}/competitions/${competitionId}/join-requests/${requestId}/${action}`,
+                {
+                    method: "POST",
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                    },
+                }
             );
-            if (!res.ok) { const e = await res.json(); throw new Error(e.detail || "Action failed"); }
+
+            if (!res.ok) {
+                const e = await res.json();
+                throw new Error(e.detail || "Action failed");
+            }
+
             setJoinRequests((prev) => prev.filter((r) => r.id !== requestId));
         } catch (error) {
             alert(error.message);
@@ -221,22 +261,17 @@ function OrganizerDashboard() {
     };
 
     async function handleDeleteCompetition() {
-        const confirmDelete = window.confirm(
-            "Are you sure you want to delete this competition?"
-        );
+        const confirmDelete = window.confirm("Are you sure you want to delete this competition?");
 
         if (!confirmDelete) return;
 
         try {
-            const res = await fetch(
-                `http://127.0.0.1:8000/competitions/${competitionId}`,
-                {
-                    method: "DELETE",
-                    headers: {
-                        Authorization: `Bearer ${token}`,
-                    },
-                }
-            );
+            const res = await fetch(`${API}/competitions/${competitionId}`, {
+                method: "DELETE",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
+            });
 
             if (!res.ok) {
                 const error = await res.json();
@@ -260,15 +295,21 @@ function OrganizerDashboard() {
         async function loadDashboard() {
             try {
                 const [competitionRes, monitoringRes] = await Promise.all([
-                    fetch(`http://127.0.0.1:8000/competitions/${competitionId}`, {
-                        headers: { Authorization: `Bearer ${token}` },
+                    fetch(`${API}/competitions/${competitionId}`, {
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                        },
                     }),
-                    fetch(`http://127.0.0.1:8000/competitions/${competitionId}/monitoring`, {
-                        headers: { Authorization: `Bearer ${token}` },
+                    fetch(`${API}/competitions/${competitionId}/monitoring`, {
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                        },
                     }),
                 ]);
 
-                if (!competitionRes.ok) throw new Error("Competition not found");
+                if (!competitionRes.ok) {
+                    throw new Error("Competition not found");
+                }
 
                 const competitionData = await competitionRes.json();
                 const monitoringData = await monitoringRes.json();
@@ -281,6 +322,8 @@ function OrganizerDashboard() {
 
                 setCompetition(competitionData);
                 setMonitoring(monitoringData);
+
+                fetchDatasets();
                 fetchJoinRequests();
             } catch (error) {
                 console.error(error);
@@ -292,30 +335,28 @@ function OrganizerDashboard() {
         }
 
         loadDashboard();
-    }, [competitionId, navigate, token]);
+    }, [competitionId, navigate, token, fetchDatasets, fetchJoinRequests]);
 
     useEffect(() => {
         if (!token) return;
 
         const interval = setInterval(() => {
-            fetch(`http://127.0.0.1:8000/competitions/${competitionId}/monitoring`, {
-                headers: { Authorization: `Bearer ${token}` },
+            fetch(`${API}/competitions/${competitionId}/monitoring`, {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
             })
                 .then((res) => res.json())
                 .then(setMonitoring)
-                .catch(() => { });
+                .catch(() => {});
         }, 5000);
 
         return () => clearInterval(interval);
     }, [competitionId, token]);
 
-    const datasets = useMemo(
-        () => safeJson(competition?.datasets_json, []),
-        [competition]
-    );
-
     const milestones = useMemo(() => {
         const extra = safeJson(competition?.milestones_json, []);
+
         return [
             { title: "Submission Open", date: competition?.start_date },
             { title: "Model Validation", date: competition?.validation_date },
@@ -329,6 +370,7 @@ function OrganizerDashboard() {
         return (
             <div className="organizer-layout">
                 <Sidebar />
+
                 <main className="organizer-main">
                     <p className="organizer-loading">Loading organizer dashboard...</p>
                 </main>
@@ -360,6 +402,7 @@ function OrganizerDashboard() {
                     <div>
                         <button
                             className="back-btn"
+                            type="button"
                             onClick={() => navigate("/competitions?tab=organizing")}
                         >
                             ← Back to Competitions
@@ -371,23 +414,24 @@ function OrganizerDashboard() {
                             <span className="badge badge-organizing">ORGANIZING</span>
                         </div>
 
-                        <p>
-                            Manage your competition, review submissions, and track progress.
-                        </p>
+                        <p>Manage your competition, review submissions, and track progress.</p>
                     </div>
 
                     <div className="organizer-actions">
                         <button
+                            type="button"
                             onClick={() =>
                                 navigate(`/edit-competition/${competitionId}`, {
-                                    state: { competition },
+                                    state: {
+                                        competition,
+                                    },
                                 })
                             }
                         >
                             Edit Competition
                         </button>
 
-                        <button className="danger" onClick={handleDeleteCompetition}>
+                        <button type="button" className="danger" onClick={handleDeleteCompetition}>
                             Delete
                         </button>
                     </div>
@@ -433,6 +477,7 @@ function OrganizerDashboard() {
 
                             <div>
                                 <h4>Key Milestones</h4>
+
                                 {milestones.map((item, index) => (
                                     <p key={index}>
                                         ✓ {item.title} - {item.date || "Not set"}
@@ -460,18 +505,23 @@ function OrganizerDashboard() {
                         <span>{monitoring.data_collection_status}</span>
                     </div>
 
-                    {datasets.length === 0 ? (
+                    {datasetsLoading ? (
+                        <div className="empty-state">
+                            <strong>Loading datasets...</strong>
+                            <p>Fetching files attached to this competition.</p>
+                        </div>
+                    ) : datasets.length === 0 ? (
                         <div className="empty-state">
                             <strong>No datasets configured</strong>
-                            <p>Add datasets from the competition creation flow.</p>
+                            <p>Add datasets from the competition dataset hub.</p>
                         </div>
                     ) : (
                         <div className="dataset-grid">
-                            {datasets.map((dataset, index) => (
-                                <div className="dataset-card" key={index}>
-                                    <strong>{dataset.name || `Dataset ${index + 1}`}</strong>
-                                    <p>{dataset.type || "Unknown type"}</p>
-                                    <span>{dataset.visibility || "Private"}</span>
+                            {datasets.map((dataset) => (
+                                <div className="dataset-card" key={dataset.id}>
+                                    <strong>{dataset.original_filename || "Dataset file"}</strong>
+                                    <p>{dataset.description || dataset.dataset_type || "Unknown type"}</p>
+                                    <span>{dataset.dataset_type || "Private"}</span>
                                 </div>
                             ))}
                         </div>
@@ -481,7 +531,7 @@ function OrganizerDashboard() {
                 <section className="panel">
                     <div className="section-row">
                         <h2>Recent Submissions</h2>
-                        <button>Export All</button>
+                        <button type="button">Export All</button>
                     </div>
 
                     <table className="submission-table">
@@ -505,7 +555,6 @@ function OrganizerDashboard() {
                     </table>
                 </section>
 
-                {/* ── Join Requests (manual-approval competitions only) ── */}
                 {competition.join_method === "manual" && (
                     <section id="join-requests" className="panel">
                         <div className="section-row">
@@ -536,18 +585,21 @@ function OrganizerDashboard() {
                                     {joinRequests.map((req) => {
                                         const members = req.team?.members?.length
                                             ? req.team.members
-                                            : [{
-                                                user_id: req.user_id,
-                                                username: req.username,
-                                                email: req.email,
-                                                role: "solo",
-                                                skills: req.skills || [],
-                                            }];
+                                            : [
+                                                {
+                                                    user_id: req.user_id,
+                                                    username: req.username,
+                                                    email: req.email,
+                                                    role: "solo",
+                                                    skills: req.skills || [],
+                                                },
+                                            ];
 
                                         return (
                                             <tr key={req.id}>
                                                 <td style={{ fontWeight: 600 }}>
                                                     <div>{req.team?.name || req.username || req.user_id}</div>
+
                                                     <span
                                                         style={{
                                                             fontSize: 10,
@@ -564,84 +616,42 @@ function OrganizerDashboard() {
                                                 </td>
 
                                                 <td>
-                                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                                        {members.map((m) => {
-                                                            const initials = (m.username || "?")
-                                                                .split(" ")
-                                                                .map((part) => part[0])
-                                                                .join("")
-                                                                .slice(0, 2)
-                                                                .toUpperCase();
-
-                                                            return (
-                                                                <button
-                                                                    key={m.user_id}
-                                                                    type="button"
-                                                                    title={`${m.username || "User"} • ${m.role || "member"} • ${m.skills?.length ? m.skills.join(", ") : "No skills listed"
-                                                                        }`}
-                                                                    onClick={() => navigate(`/profile/${m.user_id}`)}
-                                                                    style={{
-                                                                        width: 34,
-                                                                        height: 34,
-                                                                        borderRadius: "50%",
-                                                                        border: "2px solid #e5e7eb",
-                                                                        background: m.role === "leader" ? "#2d5cf6" : "#eef2ff",
-                                                                        color: m.role === "leader" ? "#fff" : "#2547c0",
-                                                                        fontSize: 12,
-                                                                        fontWeight: 800,
-                                                                        cursor: "pointer",
-                                                                        display: "inline-flex",
-                                                                        alignItems: "center",
-                                                                        justifyContent: "center",
-                                                                    }}
-                                                                >
-                                                                    {initials}
-                                                                </button>
-                                                            );
-                                                        })}
-                                                    </div>
+                                                    {members.map((member) => (
+                                                        <div key={member.user_id} style={{ marginBottom: 6 }}>
+                                                            <strong>{member.username || member.user_id}</strong>
+                                                            <div style={{ color: "#888", fontSize: 12 }}>
+                                                                {member.email || "No email"} · {member.role || "member"}
+                                                            </div>
+                                                            {member.skills?.length > 0 && (
+                                                                <div style={{ color: "#2d5cf6", fontSize: 11 }}>
+                                                                    {member.skills.join(", ")}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ))}
                                                 </td>
 
-                                                <td style={{ color: "#6b7280", fontSize: 12, maxWidth: 220 }}>
-                                                    {req.message || <em style={{ color: "#ccc" }}>No message</em>}
+                                                <td style={{ color: "#666" }}>
+                                                    {req.message || "No message"}
                                                 </td>
 
-                                                <td style={{ color: "#9ca3af", fontSize: 12 }}>
-                                                    {req.created_at ? new Date(req.created_at).toLocaleDateString() : "—"}
-                                                </td>
+                                                <td>{fmtDate(req.created_at)}</td>
 
                                                 <td>
                                                     <div style={{ display: "flex", gap: 8 }}>
                                                         <button
+                                                            type="button"
                                                             onClick={() => handleJoinRequestAction(req.id, "approve")}
-                                                            style={{
-                                                                padding: "5px 14px",
-                                                                borderRadius: 7,
-                                                                border: "none",
-                                                                background: "#d1fae5",
-                                                                color: "#065f46",
-                                                                fontWeight: 700,
-                                                                fontSize: 12,
-                                                                cursor: "pointer",
-                                                            }}
                                                         >
-                                                            ✓ Approve
+                                                            Approve
                                                         </button>
 
                                                         <button
+                                                            type="button"
+                                                            className="danger"
                                                             onClick={() => handleJoinRequestAction(req.id, "reject")}
-                                                            style={{
-                                                                padding: "5px 14px",
-                                                                borderRadius: 7,
-                                                                border: "none",
-                                                                background: "#fee2e2",
-                                                                color: "#991b1b",
-                                                                fontWeight: 700,
-                                                                fontSize: 12,
-                                                                cursor: "pointer",
-                                                            }}
                                                         >
-                                                            ✕ Reject
+                                                            Reject
                                                         </button>
                                                     </div>
                                                 </td>

@@ -18,7 +18,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, text
+from sqlalchemy import or_, text, func
 
 from models import (
     Competition,
@@ -29,6 +29,7 @@ from models import (
     DashboardStat,
     RecentCompetition,
     CompetitionDataset,
+    Submission,
 )
 from schemas import CompetitionCreateIn, CompetitionActionOut
 from .utils import get_db, get_current_user, get_icon_for_task
@@ -881,6 +882,12 @@ def join_competition(
     real_status = compute_competition_status(competition)
     if real_status != "OPEN":
         raise HTTPException(status_code=400, detail=f"Competition is {real_status.lower()} and cannot be joined")
+    
+    if competition.min_members and competition.min_members > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="This competition requires a team. Please join with a team instead of joining solo.",
+        )
 
     current_role = get_user_role(db, competition_id, current_user.id)
     if current_role == "organizer":
@@ -1388,22 +1395,66 @@ def get_competition_monitoring(
         raise HTTPException(status_code=404, detail="Competition not found")
 
     role = get_user_role(db, competition_id, current_user.id)
-    participants_count = db.query(CompetitionParticipant).filter(CompetitionParticipant.competition_id == competition_id).count()
-    datasets_count = db.query(CompetitionDataset).filter(CompetitionDataset.competition_id == competition_id).count()
+
+    participants_count = (
+        db.query(CompetitionParticipant)
+        .filter(CompetitionParticipant.competition_id == competition_id)
+        .count()
+    )
+
+    team_count = (
+        db.query(func.count(func.distinct(CompetitionParticipant.team_id)))
+        .filter(
+            CompetitionParticipant.competition_id == competition_id,
+            CompetitionParticipant.team_id.isnot(None),
+        )
+        .scalar()
+        or 0
+    )
+
+    datasets_count = (
+        db.query(CompetitionDataset)
+        .filter(CompetitionDataset.competition_id == competition_id)
+        .count()
+    )
+
+    submissions_count = (
+        db.query(Submission)
+        .filter(Submission.competition_id == competition_id)
+        .count()
+    )
+
+    done_submissions = (
+        db.query(Submission)
+        .filter(
+            Submission.competition_id == competition_id,
+            Submission.status == "done",
+            Submission.score.isnot(None),
+        )
+        .all()
+    )
+
+    if done_submissions:
+        best_submission = max(done_submissions, key=lambda s: float(s.score or 0))
+        best_score = round(float(best_submission.score), 4)
+        leaderboard_status = "Leaderboard active"
+    else:
+        best_score = "Pending"
+        leaderboard_status = "Waiting for submissions"
 
     return {
         "is_organizer": role == "organizer",
         "user_role": role,
         "competition_status": compute_competition_status(competition),
         "participants_count": participants_count,
-        "teams_count": participants_count,
+        "teams_count": team_count if team_count > 0 else participants_count,
         "max_teams": competition.max_teams,
         "datasets_count": datasets_count,
         "data_collection_status": "Configured" if datasets_count else "Not configured",
-        "submissions_count": 0,
-        "best_score": "Pending",
+        "submissions_count": submissions_count,
+        "best_score": best_score,
         "primary_metric": competition.primary_metric or "Not selected",
-        "leaderboard_status": "Waiting for submissions",
+        "leaderboard_status": leaderboard_status,
     }
 
 

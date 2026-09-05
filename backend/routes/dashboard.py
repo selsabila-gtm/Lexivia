@@ -14,10 +14,66 @@ router = APIRouter(tags=["dashboard"])
 
 
 def parse_date(value):
+    """
+    Safely parse a date value from the DB.
+
+    Supports:
+    - None
+    - date
+    - datetime
+    - "YYYY-MM-DD"
+    - ISO datetime strings
+    """
     if not value:
         return None
+
     try:
-        return datetime.strptime(value, "%Y-%m-%d").date()
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return value
+
+        if isinstance(value, datetime):
+            return value.date()
+
+        if isinstance(value, str):
+            value = value.strip()
+
+            # Normal date format: "2026-07-03"
+            try:
+                return datetime.strptime(value, "%Y-%m-%d").date()
+            except Exception:
+                pass
+
+            # ISO datetime format: "2026-07-03T20:00:00"
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+            except Exception:
+                pass
+
+        return None
+    except Exception:
+        return None
+
+
+def to_naive_datetime(value):
+    """
+    Convert DB datetime/string values into timezone-naive datetime.
+    This keeps your old behavior but makes it safer.
+    """
+    if not value:
+        return None
+
+    try:
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=None)
+
+        if isinstance(value, date):
+            return datetime.combine(value, datetime.min.time())
+
+        if isinstance(value, str):
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return dt.replace(tzinfo=None)
+
+        return None
     except Exception:
         return None
 
@@ -51,19 +107,45 @@ def competition_type(comp: Competition):
 
 
 def time_ago(value):
+    """
+    Human-friendly relative time.
+
+    Examples:
+    - Just now
+    - 5 minutes ago
+    - 3 hours ago
+    - 22 days ago
+    - 2 months ago
+    - 1 year ago
+    """
     if not value:
         return "Recently"
 
     try:
-        if isinstance(value, str):
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
-        else:
-            dt = value.replace(tzinfo=None)
+        dt = to_naive_datetime(value)
 
-        diff = datetime.utcnow() - dt
+        if not dt:
+            return "Recently"
 
-        if diff.days > 0:
-            return f"{diff.days} day{'s' if diff.days > 1 else ''} ago"
+        now = datetime.utcnow()
+        diff = now - dt
+
+        # If the date is accidentally in the future, avoid negative values.
+        if diff.total_seconds() < 0:
+            return "Just now"
+
+        days = diff.days
+
+        if days >= 365:
+            years = max(1, round(days / 365))
+            return f"{years} year{'s' if years > 1 else ''} ago"
+
+        if days >= 30:
+            months = max(1, round(days / 30))
+            return f"{months} month{'s' if months > 1 else ''} ago"
+
+        if days > 0:
+            return f"{days} day{'s' if days > 1 else ''} ago"
 
         hours = diff.seconds // 3600
         if hours > 0:
@@ -142,6 +224,8 @@ def get_recent_competitions(user_id: str, db: Session = Depends(get_db)):
     rows = []
 
     for comp, action_time in organized:
+        parsed_action_time = to_naive_datetime(action_time)
+
         rows.append({
             "id": f"organized-{comp.id}",
             "competition_id": comp.id,
@@ -152,10 +236,12 @@ def get_recent_competitions(user_id: str, db: Session = Depends(get_db)):
             "sync": time_ago(action_time),
             "icon": get_icon_for_task(comp.task_type),
             "role": "ORGANIZER",
-            "action_time": str(action_time or ""),
+            "action_time": parsed_action_time.isoformat() if parsed_action_time else str(action_time or ""),
         })
 
     for comp, action_time in joined:
+        parsed_action_time = to_naive_datetime(action_time)
+
         rows.append({
             "id": f"joined-{comp.id}",
             "competition_id": comp.id,
@@ -166,7 +252,7 @@ def get_recent_competitions(user_id: str, db: Session = Depends(get_db)):
             "sync": time_ago(action_time),
             "icon": get_icon_for_task(comp.task_type),
             "role": "PARTICIPANT",
-            "action_time": str(action_time or ""),
+            "action_time": parsed_action_time.isoformat() if parsed_action_time else str(action_time or ""),
         })
 
     rows.sort(key=lambda x: x["action_time"], reverse=True)

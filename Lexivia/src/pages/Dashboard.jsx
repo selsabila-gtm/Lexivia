@@ -5,6 +5,23 @@ import Topbar from "../components/Topbar";
 import "./Dashboard.css";
 import { supabase } from "../config/supabase";
 
+import {
+    BarChart3,
+    FileText,
+    Languages,
+    Headphones,
+    Tags,
+    Image,
+    Database,
+    MessageSquare,
+    Trophy,
+    Mic,
+    Volume2,
+    Smile,
+} from "lucide-react";
+
+const API = "http://127.0.0.1:8000";
+
 function statusClass(status) {
     const s = String(status || "").toLowerCase();
 
@@ -36,8 +53,45 @@ function normalizeRecentItem(item, index) {
         status: item?.status || "OPEN",
         score: item?.score || "--",
         sync: item?.sync || "Recently",
+
+        // Kept in case another part of your backend/frontend still needs it.
+        // The dashboard UI now chooses the icon from item.type instead.
         icon: item?.icon || "🏆",
     };
+}
+
+function taskKey(type) {
+    return String(type || "GENERAL")
+        .toUpperCase()
+        .replace(/[\s-]+/g, "_");
+}
+
+function taskClass(type) {
+    return taskKey(type).toLowerCase().replace(/_/g, "-");
+}
+
+const TASK_ICONS = {
+    SENTIMENT_ANALYSIS: BarChart3,
+    SUMMARIZATION: FileText,
+    TRANSLATION: Languages,
+    AUDIO_EVENT_DETECTION: Headphones,
+    TEXT_CLASSIFICATION: Tags,
+    IMAGE_CLASSIFICATION: Image,
+    DATASET: Database,
+    QUESTION_ANSWERING: MessageSquare,
+
+    // Extra task types used in your DataCollection page
+    NER: Tags,
+    AUDIO_SYNTHESIS: Volume2,
+    AUDIO_TRANSCRIPTION: Mic,
+    SPEECH_EMOTION: Smile,
+
+    GENERAL: Trophy,
+};
+
+function TaskIcon({ type }) {
+    const Icon = TASK_ICONS[taskKey(type)] || Trophy;
+    return <Icon size={20} strokeWidth={2.3} />;
 }
 
 function Dashboard() {
@@ -45,11 +99,13 @@ function Dashboard() {
     const [userId, setUserId] = useState(null);
     const [token, setToken] = useState(localStorage.getItem("token") || "");
     const [loading, setLoading] = useState(true);
+
     const [stats, setStats] = useState({
         organized_competitions: 0,
         joined_competitions: 0,
         teams_joined: 0,
     });
+
     const [recentCompetitions, setRecentCompetitions] = useState([]);
 
     const navigate = useNavigate();
@@ -80,12 +136,15 @@ function Dashboard() {
                     "User";
 
                 try {
-                    const profileRes = await fetch("http://127.0.0.1:8000/profile/me", {
-                        headers: { Authorization: `Bearer ${session.access_token}` },
+                    const profileRes = await fetch(`${API}/profile/me`, {
+                        headers: {
+                            Authorization: `Bearer ${session.access_token}`,
+                        },
                     });
 
                     if (profileRes.ok) {
                         const profile = await profileRes.json();
+
                         name =
                             profile.full_name ||
                             profile.name ||
@@ -98,7 +157,7 @@ function Dashboard() {
 
                 setUserName(name);
 
-                fetch("http://127.0.0.1:8000/sync-user", {
+                fetch(`${API}/sync-user`, {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
@@ -122,8 +181,10 @@ function Dashboard() {
         if (!userId || !token) return;
 
         try {
-            const res = await fetch(`http://127.0.0.1:8000/dashboard/stats/${userId}`, {
-                headers: { Authorization: `Bearer ${token}` },
+            const res = await fetch(`${API}/dashboard/stats/${userId}`, {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
             });
 
             if (res.status === 401) {
@@ -135,17 +196,20 @@ function Dashboard() {
 
             if (!res.ok) {
                 console.error("Stats fetch failed:", data);
+
                 setStats({
                     organized_competitions: 0,
                     joined_competitions: 0,
                     teams_joined: 0,
                 });
+
                 return;
             }
 
             setStats(normalizeStats(data));
         } catch (err) {
             console.error("Stats fetch error:", err);
+
             setStats({
                 organized_competitions: 0,
                 joined_competitions: 0,
@@ -158,8 +222,10 @@ function Dashboard() {
         if (!userId || !token) return;
 
         try {
-            const res = await fetch(`http://127.0.0.1:8000/dashboard/recent/${userId}`, {
-                headers: { Authorization: `Bearer ${token}` },
+            const res = await fetch(`${API}/dashboard/recent/${userId}`, {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
             });
 
             if (res.status === 401) {
@@ -194,6 +260,7 @@ function Dashboard() {
         return (
             <div className="dashboard-shell">
                 <Sidebar />
+
                 <div className="dashboard-main">
                     <Topbar
                         title="Loading dashboard..."
@@ -224,7 +291,11 @@ function Dashboard() {
                                     <span className="stat-icon">🏆</span>
                                     <span className="today-badge">Organized</span>
                                 </div>
-                                <h3>{String(stats.organized_competitions || 0).padStart(2, "0")}</h3>
+
+                                <h3>
+                                    {String(stats.organized_competitions || 0).padStart(2, "0")}
+                                </h3>
+
                                 <p>ORGANIZED COMPETITIONS</p>
                             </div>
 
@@ -232,7 +303,11 @@ function Dashboard() {
                                 <div className="stat-card-top">
                                     <span className="stat-icon">🤝</span>
                                 </div>
-                                <h3>{String(stats.joined_competitions || 0).padStart(2, "0")}</h3>
+
+                                <h3>
+                                    {String(stats.joined_competitions || 0).padStart(2, "0")}
+                                </h3>
+
                                 <p>JOINED COMPETITIONS</p>
                             </div>
 
@@ -240,7 +315,11 @@ function Dashboard() {
                                 <div className="stat-card-top">
                                     <span className="stat-icon">👥</span>
                                 </div>
-                                <h3>{String(stats.teams_joined || 0).padStart(2, "0")}</h3>
+
+                                <h3>
+                                    {String(stats.teams_joined || 0).padStart(2, "0")}
+                                </h3>
+
                                 <p>TEAMS JOINED</p>
                             </div>
                         </div>
@@ -250,7 +329,12 @@ function Dashboard() {
                                 <h2>Recent Competitions</h2>
 
                                 <div className="small-actions">
-                                    <button type="button" onClick={() => navigate("/competitions")}>
+                                    <button
+                                        type="button"
+                                        onClick={() => navigate("/competitions")}
+                                        aria-label="Open competitions page"
+                                        title="Open competitions"
+                                    >
                                         ↗
                                     </button>
 
@@ -260,6 +344,8 @@ function Dashboard() {
                                             fetchStats();
                                             fetchRecent();
                                         }}
+                                        aria-label="Refresh dashboard"
+                                        title="Refresh"
                                     >
                                         ⟳
                                     </button>
@@ -291,7 +377,10 @@ function Dashboard() {
                                             style={{ cursor: "pointer" }}
                                         >
                                             <div className="recent-main">
-                                                <div className="recent-icon">{item.icon}</div>
+                                                <div className={`recent-icon ${taskClass(item.type)}`}>
+                                                    <TaskIcon type={item.type} />
+                                                </div>
+
                                                 <div>
                                                     <h3>{item.title}</h3>
                                                     <p>{item.type}</p>

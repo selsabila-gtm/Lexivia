@@ -13,14 +13,14 @@ to keep the logic in one place.
 """
 
 from datetime import datetime
+from pathlib import Path
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import Column, Integer, String, Text
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 
-from database import Base
 from models import UserProfile
-from models_teams import Team, TeamMember, TeamInvitation,TeamJoinRequest
+from models_teams import Team, TeamMember, TeamInvitation, TeamJoinRequest
 from .utils import get_db, get_current_user
 
 # Import notification helper (lazy to avoid circular imports at module load time)
@@ -28,7 +28,13 @@ from .utils import get_db, get_current_user
 
 router = APIRouter(tags=["teams"])
 
-
+UPLOAD_DIR = Path("uploads/team_logos")
+ALLOWED_LOGO_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+MAX_LOGO_BYTES = 2 * 1024 * 1024
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -63,6 +69,23 @@ def _require_can_invite(db: Session, team_id: int, user_id: str):
     if not m or m.role not in ("leader", "admin"):
         raise HTTPException(status_code=403, detail="Only leaders and admins can invite members")
     return m
+
+
+
+def _delete_logo_file(logo_url: str | None):
+    if not logo_url:
+        return
+
+    if not logo_url.startswith("/uploads/team_logos/"):
+        return
+
+    path = Path(logo_url.lstrip("/"))
+    try:
+        if path.exists() and path.is_file():
+            path.unlink()
+    except OSError:
+        # Do not fail the request if the old file cannot be removed.
+        pass
 
 
 # ── List / search teams ────────────────────────────────────────────────────────
@@ -124,6 +147,7 @@ def list_teams(
             "id":                t.id,
             "name":              t.name,
             "description":       t.description,
+            "logo_url":          getattr(t, "logo_url", None),
             "created_at":        t.created_at,
             "member_count":      count_map.get(t.id, 0),
             "is_my_team":        t.id in my_teams,
@@ -168,7 +192,7 @@ def create_team(
     ))
     db.commit()
     db.refresh(team)
-    return {"id": team.id, "name": team.name, "message": "Team created successfully"}
+    return {"id": team.id, "name": team.name, "logo_url": getattr(team, "logo_url", None), "message": "Team created successfully"}
 
 
 # ── Team detail ────────────────────────────────────────────────────────────────
@@ -207,6 +231,7 @@ def get_team(
         "id":                team.id,
         "name":              team.name,
         "description":       team.description,
+        "logo_url":          getattr(team, "logo_url", None),
         "created_at":        team.created_at,
         "created_by":        team.created_by,
         "members":           members,
@@ -240,6 +265,72 @@ def update_team(
     return {"message": "Team updated successfully"}
 
 
+# ── Upload / remove team logo (leaders only) ──────────────────────────────────
+
+@router.post("/teams/{team_id}/logo")
+async def upload_team_logo(
+    team_id: int,
+    logo: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    _require_leader(db, team_id, str(current_user.id))
+
+    team = db.query(Team).filter(Team.id == team_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    if logo.content_type not in ALLOWED_LOGO_TYPES:
+        raise HTTPException(status_code=400, detail="Only JPG, PNG, and WEBP images are allowed")
+
+    content = await logo.read()
+    if len(content) > MAX_LOGO_BYTES:
+        raise HTTPException(status_code=400, detail="Logo image must be smaller than 2MB")
+
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    ext = ALLOWED_LOGO_TYPES[logo.content_type]
+    filename = f"team_{team_id}_{uuid4().hex}{ext}"
+    file_path = UPLOAD_DIR / filename
+    file_path.write_bytes(content)
+
+    old_logo = getattr(team, "logo_url", None)
+    _delete_logo_file(old_logo)
+
+    team.logo_url = f"/uploads/team_logos/{filename}"
+    team.updated_at = _now()
+    db.commit()
+
+    return {
+        "message": "Team picture updated successfully",
+        "logo_url": team.logo_url,
+    }
+
+
+@router.delete("/teams/{team_id}/logo")
+def remove_team_logo(
+    team_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    _require_leader(db, team_id, str(current_user.id))
+
+    team = db.query(Team).filter(Team.id == team_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    _delete_logo_file(getattr(team, "logo_url", None))
+
+    team.logo_url = None
+    team.updated_at = _now()
+    db.commit()
+
+    return {
+        "message": "Team picture removed successfully",
+        "logo_url": None,
+    }
+
+
 # ── Delete team (leaders only) ────────────────────────────────────────────────
 
 @router.delete("/teams/{team_id}")
@@ -253,6 +344,8 @@ def delete_team(
     team = db.query(Team).filter(Team.id == team_id).first()
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
+
+    _delete_logo_file(getattr(team, "logo_url", None))
 
     db.query(TeamMember).filter(TeamMember.team_id == team_id).delete(synchronize_session=False)
     db.query(TeamInvitation).filter(TeamInvitation.team_id == team_id).delete(synchronize_session=False)
