@@ -293,7 +293,7 @@ export default function NotificationsPage() {
     }
   }, [page, filter, unreadOnly, navigate]);
 
-  useEffect(() => { fetchNotifs(); }, [fetchNotifs]);
+  //useEffect(() => { fetchNotifs(); }, [fetchNotifs]);
 
   // Reset page when filter changes
   useEffect(() => { setPage(1); setSelected(new Set()); }, [filter, unreadOnly]);

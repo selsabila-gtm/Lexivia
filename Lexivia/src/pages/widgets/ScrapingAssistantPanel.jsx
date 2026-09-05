@@ -18,12 +18,67 @@
  *    YouTube URLs are handled automatically via yt-dlp on the backend.
  */
 
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 
 const API = "http://127.0.0.1:8000";
 function authHeader() {
   const t = localStorage.getItem("token");
   return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+// ─── Authenticated audio preview ───────────────────────────────────────────────
+// A plain <audio src="..."> can't send an Authorization header, but
+// /scrape/audio-file requires one — so the browser's native request always
+// 422s. Instead we fetch the file ourselves (with the header) and hand the
+// <audio> element an in-memory blob URL.
+function AudioPreview({ src }) {
+  const [blobUrl, setBlobUrl] = useState(null);
+  const [failed, setFailed]   = useState(false);
+
+  useEffect(() => {
+    let objectUrl = null;
+    let cancelled = false;
+
+    setBlobUrl(null);
+    setFailed(false);
+
+    fetch(src, { headers: authHeader() })
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.blob();
+      })
+      .then(blob => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setBlobUrl(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [src]);
+
+  if (failed) {
+    return (
+      <div style={{ fontSize: 11, color: "#b91c1c", marginBottom: 8 }}>
+        Couldn't load audio.
+      </div>
+    );
+  }
+  if (!blobUrl) {
+    return (
+      <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 8 }}>
+        Loading audio…
+      </div>
+    );
+  }
+  return (
+    <audio src={blobUrl} controls style={{ width: "100%", marginBottom: 8, height: 32 }} />
+  );
 }
 
 // ─── Task type helpers ────────────────────────────────────────────────────────
@@ -321,8 +376,7 @@ function ItemCard({ item, taskType, config, onApprove, onReject, onEdit, isEditi
       {/* Content preview */}
       <div style={{ marginBottom: 10 }}>
         {isAudio && item.audio_url && (
-          <audio src={`${API}/scrape/audio-file?path=${encodeURIComponent(item.audio_url)}`}
-            controls style={{ width: "100%", marginBottom: 8, height: 32 }} />
+          <AudioPreview src={`${API}/scrape/audio-file?path=${encodeURIComponent(item.audio_url)}`} />
         )}
         {item.text_content && (
           <div style={{ fontSize: 12, color: "#374151", lineHeight: 1.6, padding: "8px 12px",
@@ -515,6 +569,7 @@ export default function ScrapingAssistantPanel({ competition, config, onSubmit, 
   const [url, setUrl]                 = useState("");
   const [contentType, setContentType] = useState("captions");
   const [maxItems, setMaxItems]       = useState(15);
+  const [clipDuration, setClipDuration] = useState(10);
 
   const [phase,    setPhase]    = useState("idle");
   const [stepMsg,  setStepMsg]  = useState("");
@@ -549,7 +604,7 @@ export default function ScrapingAssistantPanel({ competition, config, onSubmit, 
     try {
       const endpoint = sourceType === "video" ? "/scrape/video" : "/scrape/text";
       const body = sourceType === "video"
-        ? { url: url.trim(), competition_id: competitionId, max_segments: maxItems }
+        ? { url: url.trim(), competition_id: competitionId, max_segments: maxItems, clip_duration_seconds: clipDuration }
         : { url: url.trim(), competition_id: competitionId, content_type: contentType, max_items: maxItems };
 
       let si = 0;
@@ -772,6 +827,18 @@ export default function ScrapingAssistantPanel({ competition, config, onSubmit, 
               onChange={e => setMaxItems(Number(e.target.value))}
               style={{ flex: 1, accentColor: "#1359db" }} />
           </div>
+
+          {/* Clip duration — only relevant when pulling audio clips from video */}
+          {sourceType === "video" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 18 }}>
+              <label className="dc-field-label" style={{ margin: 0, whiteSpace: "nowrap" }}>
+                CLIP LENGTH: {clipDuration}s
+              </label>
+              <input type="range" min={3} max={60} step={1} value={clipDuration}
+                onChange={e => setClipDuration(Number(e.target.value))}
+                style={{ flex: 1, accentColor: "#1359db" }} />
+            </div>
+          )}
 
           {/* Start button */}
           <div className="dc-widget-actions">

@@ -23,6 +23,11 @@ Changes in this version
    yt-dlp's writecomments feature instead of BeautifulSoup (YouTube renders
    comments client-side so httpx alone cannot extract them).
 
+7. EVEN TIMESTAMP SAMPLING  — segments are no longer truncated to the first
+   `max_segments` in chronological order (which meant long videos only ever
+   produced clips from the first few seconds). `_evenly_sample()` now spreads
+   the selected segments across the full video duration.
+
 6. YOUTUBE CDN TIMEOUT FIX  — the /scrape/video endpoint now handles the
    "Connection to rr*.googlevideo.com timed out" error gracefully:
      a) yt-dlp options hardened: geo_bypass, nocheckcertificate, browser UA
@@ -119,6 +124,7 @@ class VideoScrapeRequest(BaseModel):
     url: str
     competition_id: str
     max_segments: int = 15
+    clip_duration_seconds: float = 10.0   # target length of each audio clip; user-adjustable
 
 
 class TextScrapeRequest(BaseModel):
@@ -361,6 +367,58 @@ def _parse_srt(srt_text: str) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# FIX 8 — Clips were too short. Each audio clip was extracted from a single
+# subtitle cue (often 2-4s). This merges consecutive cues into windows of
+# ~clip_duration_seconds (user-adjustable via the request), concatenating
+# their text in order so the saved transcript matches exactly what's audible
+# in that window — nothing more, nothing less.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _merge_segments_by_duration(segments: list[dict], target_duration: float) -> list[dict]:
+    if not segments:
+        return []
+    target_duration = max(1.0, target_duration)
+
+    merged: list[dict] = []
+    cur_start = segments[0]["start"]
+    cur_texts: list[str] = []
+    cur_end = segments[0]["start"]
+
+    for seg in segments:
+        # If adding this cue would blow past target_duration and we already
+        # have something, close out the current window first.
+        if cur_texts and (seg["end"] - cur_start) > target_duration:
+            merged.append({"start": cur_start, "end": cur_end, "text": " ".join(cur_texts)})
+            cur_start = seg["start"]
+            cur_texts = []
+
+        cur_texts.append(seg["text"])
+        cur_end = seg["end"]
+
+    if cur_texts:
+        merged.append({"start": cur_start, "end": cur_end, "text": " ".join(cur_texts)})
+
+    return merged
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FIX 7 — Sample segments across the whole video instead of just the start.
+# Previously `segments[: req.max_segments]` always kept the first N segments
+# in chronological order, so long videos only ever yielded clips from the
+# first few seconds/minutes. This spreads the picks evenly across the full
+# list so source_label timestamps vary across the whole video's duration.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _evenly_sample(segments: list[dict], n: int) -> list[dict]:
+    if n <= 0 or not segments:
+        return []
+    if len(segments) <= n:
+        return segments
+    step = len(segments) / n
+    return [segments[int(i * step)] for i in range(n)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Audio extraction helpers  (unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -507,6 +565,9 @@ async def scrape_video(
     if not comp:
         raise HTTPException(status_code=404, detail="Competition not found")
 
+    # Clamp user-adjustable clip length to a sane range (3s – 60s)
+    req.clip_duration_seconds = max(3.0, min(60.0, req.clip_duration_seconds))
+
     task_type = comp.task_type or "TEXT_CLASSIFICATION"
 
     # FIX 4: merge DB config with hard-coded defaults
@@ -594,13 +655,22 @@ async def scrape_video(
         # ── Collect subtitles ─────────────────────────────────────────────
         segments: list[dict] = _collect_subtitles(tmpdir)
 
-        if not segments:
+        if segments:
+            # Merge short subtitle cues into ~clip_duration_seconds windows
+            # so audio clips aren't just a single 2-4s cue, and the saved
+            # transcript text matches exactly what's audible in each window.
+            segments = _merge_segments_by_duration(segments, req.clip_duration_seconds)
+        else:
             description = (info or {}).get("description", "") or ""
             chunks = [
                 s.strip() for s in re.split(r"[\n.!?]+", description) if len(s.strip()) > 20
             ]
             for i, chunk in enumerate(chunks[: req.max_segments]):
-                segments.append({"start": i * 30.0, "end": (i + 1) * 30.0, "text": chunk})
+                segments.append({
+                    "start": i * req.clip_duration_seconds,
+                    "end":   (i + 1) * req.clip_duration_seconds,
+                    "text":  chunk,
+                })
 
         if not segments:
             if audio_download_failed:
@@ -619,7 +689,7 @@ async def scrape_video(
                 ),
             )
 
-        segments = segments[: req.max_segments]
+        segments = _evenly_sample(segments, req.max_segments)
 
         # ── Collect downloaded audio (Phase 1 only) ───────────────────────
         if is_audio_task and not audio_download_failed:

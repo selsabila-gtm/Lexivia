@@ -260,10 +260,11 @@ export default function NotificationPopup() {
   // ── Poll every 30 s for unread badge ─────────────────────────────────────
 
   useEffect(() => {
-    fetchNotifs();
-    const id = setInterval(fetchNotifs, 30000);
-    return () => clearInterval(id);
-  }, [fetchNotifs]);
+    //fetchNotifs();
+    //const id = setInterval(fetchNotifs, 30000);
+    //return () => clearInterval(id);
+  }, []);
+  //}, [fetchNotifs]);
 
   // ── Close on outside click ────────────────────────────────────────────────
 
