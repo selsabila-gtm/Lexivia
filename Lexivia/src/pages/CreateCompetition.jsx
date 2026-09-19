@@ -12,15 +12,28 @@ async function getFreshToken() {
     return data.session.access_token;
 }
 
-const steps = [
-    "Basic Info",
-    "Task Config",   // ← new step
-    "Evaluation",
-    "Rules",
-    "Complexity",
-    "Datasets",
-    "Milestones",
-];
+// The wizard is dynamic: competitions that use collaborative, participant-sourced
+// data collection (the AMDC pattern) get extra steps for Tracks, Phases and the
+// data license, and their timeline is driven by Phases instead of Milestones.
+function getSteps(form) {
+    const s = [
+        { key: "basic", label: "Basic Info" },
+        { key: "taskConfig", label: "Task Config" },
+    ];
+    if (form.collaborativeSourcing) {
+        s.push({ key: "tracks", label: "Tracks" });
+        s.push({ key: "phases", label: "Phases" });
+        s.push({ key: "license", label: "License" });
+    }
+    s.push({ key: "evaluation", label: "Evaluation" });
+    s.push({ key: "rules", label: "Rules" });
+    s.push({ key: "complexity", label: "Complexity" });
+    s.push({ key: "datasets", label: "Datasets" });
+    if (!form.collaborativeSourcing) {
+        s.push({ key: "milestones", label: "Milestones" });
+    }
+    return s;
+}
 
 // Task types now use exact DB values so they round-trip through the API correctly.
 const taskTypes = [
@@ -34,6 +47,19 @@ const taskTypes = [
     { value: "AUDIO_TRANSCRIPTION", label: "Audio Transcription" },
     { value: "SPEECH_EMOTION", label: "Speech Emotion" },
     { value: "AUDIO_EVENT_DETECTION", label: "Audio Event Detection" },
+    { value: "MULTI_TASK_ANNOTATION", label: "Multi-Task / Multimodal Annotation" },
+];
+
+// Source types a team can pull participant-sourced data from (generic, not audio-specific)
+const SOURCE_TYPE_OPTIONS = [
+    { value: "public_platform", label: "Public platform (YouTube, etc.)" },
+    { value: "self_recorded", label: "Recorded / written by the participant" },
+    { value: "existing_dataset", label: "Existing dataset the team adapts" },
+];
+
+const MODALITY_OPTIONS = [
+    { value: "text", label: "Text" },
+    { value: "audio", label: "Audio" },
 ];
 
 const primaryMetrics = [
@@ -117,6 +143,23 @@ function getDefaultTaskConfig(taskType) {
             };
         case "AUDIO_EVENT_DETECTION":
             return { event_types: ["speech", "music", "noise", "silence", "applause", "laughter", "alarm"] };
+        case "MULTI_TASK_ANNOTATION":
+            // Generic "AMDC-style" config: several simultaneous label sets, over one or
+            // more modalities, sourced and annotated by participants themselves.
+            return {
+                modalities: ["text", "audio"],
+                tasks: [
+                    { id: 1, name: "Sentiment", labels: ["Positive", "Negative", "Neutral"] },
+                    { id: 2, name: "Sarcasm", labels: ["Yes", "No"] },
+                    { id: 3, name: "Hate Speech", labels: ["Hateful", "Not Hateful"] },
+                ],
+                max_audio_seconds: 10,
+                max_transcript_words: 20,
+                allowed_source_types: ["public_platform", "self_recorded"],
+                require_public_source_provenance: true,
+                annotators_per_instance: 2,
+                adjudication_enabled: true,
+            };
         default:
             return {};
     }
@@ -151,6 +194,41 @@ const initialForm = {
 
     // Task-specific annotation config set by organizer
     taskConfig: {},
+
+    // ── Collaborative / participant-sourced data competitions (e.g. AMDC) ──────
+    // When true, participants source + annotate their own data as teams, split
+    // into tracks, across explicit phases, under a mandatory data license, and
+    // are scored on a data-quality + model-quality combined leaderboard.
+    collaborativeSourcing: false,
+
+    // Tracks let you split teams into fair comparison groups (region, language,
+    // category...) each with a minimum team count to be viable.
+    tracks: [],
+
+    // Ordered phases replace the single start/end date pair for competitions
+    // that need more than one stage (e.g. data collection → break → training).
+    phases: [
+        { id: 1, name: "Data Collection & Annotation", durationDays: 14, description: "" },
+        { id: 2, name: "Model Training & Leaderboard", durationDays: 10, description: "" },
+    ],
+
+    // Mandatory data usage license — required whenever contributed data may be
+    // published or reused beyond the contributing team.
+    license: {
+        required: false,
+        version: "v1.0",
+        text: "",
+    },
+
+    // Evaluation scoring mode: "standard" (one submission score) or
+    // "data_quality_plus_model" (per-team TOTO-style data quality score
+    // combined with each team's own model score).
+    evaluationMode: "standard",
+    dataQualityWeight: 50,
+    modelWeight: 50,
+    totoEnabled: false,
+    publicTestFraction: 20,
+    winnersPerTrack: 1,
 
     datasets: [],
     milestones: [],
@@ -187,6 +265,10 @@ function mapCompetitionToForm(c) {
     // Re-inflate prompts array for audio tasks
     if (!taskConfig.prompts) taskConfig.prompts = [];
 
+    // Collaborative-sourcing sub-config lives alongside taskConfig in dataset_config.
+    const collab = taskConfig.collaborative || {};
+    delete taskConfig.collaborative;
+
     return {
         competitionName: c.title || "",
         taskType: c.task_type || c.category || "",
@@ -216,6 +298,19 @@ function mapCompetitionToForm(c) {
         taskConfig: Object.keys(taskConfig).length
             ? taskConfig
             : getDefaultTaskConfig(c.task_type || ""),
+
+        collaborativeSourcing: !!collab.enabled,
+        tracks: Array.isArray(collab.tracks) ? collab.tracks : [],
+        phases: Array.isArray(collab.phases) && collab.phases.length
+            ? collab.phases
+            : initialForm.phases,
+        license: collab.license || initialForm.license,
+        evaluationMode: collab.evaluation?.mode || "standard",
+        dataQualityWeight: collab.evaluation?.data_quality_weight ?? 50,
+        modelWeight: collab.evaluation?.model_weight ?? 50,
+        totoEnabled: !!collab.evaluation?.toto_enabled,
+        publicTestFraction: collab.evaluation?.public_test_fraction ?? 20,
+        winnersPerTrack: collab.evaluation?.winners_per_track ?? 1,
 
         datasets: [],
         milestones: safeArrayJson(c.milestones_json),
@@ -277,7 +372,17 @@ function CreateCompetition({ editMode = false }) {
     const [savingDraft, setSavingDraft] = useState(false);
     const [draftError, setDraftError] = useState(null);
 
-    const progressPercent = ((currentStep + 1) / steps.length) * 100;
+    const wizardSteps = getSteps(form);
+
+    // If toggling "collaborative sourcing" removes/adds steps, keep the current
+    // step in range instead of pointing past the end of the array.
+    useEffect(() => {
+        if (currentStep > wizardSteps.length - 1) {
+            setCurrentStep(wizardSteps.length - 1);
+        }
+    }, [wizardSteps.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const progressPercent = ((currentStep + 1) / wizardSteps.length) * 100;
 
     useEffect(() => {
         if (!isEditMode) return;
@@ -323,9 +428,10 @@ function CreateCompetition({ editMode = false }) {
         loadCompetitionForEdit();
     }, [isEditMode, location.state, competitionId, navigate]);
 
-    // Auto-save draft when reaching Datasets step (index 5 in 7-step wizard)
+    // Auto-save draft when reaching the Datasets step (its index shifts depending
+    // on whether the collaborative-sourcing steps are present).
     useEffect(() => {
-        if (currentStep !== 5) return;
+        if (wizardSteps[currentStep]?.key !== "datasets") return;
         if (isEditMode) return;
         if (savedCompetitionId) return;
 
@@ -392,6 +498,94 @@ function CreateCompetition({ editMode = false }) {
         }));
     };
 
+    // ── Multi-task / multimodal annotation config helpers ──────────────────────
+    const addAnnotationTask = () => {
+        const tasks = Array.isArray(form.taskConfig.tasks) ? form.taskConfig.tasks : [];
+        updateTaskConfig("tasks", [
+            ...tasks,
+            { id: Date.now(), name: "", labels: ["Label A", "Label B"] },
+        ]);
+    };
+
+    const updateAnnotationTask = (id, field, value) => {
+        const tasks = Array.isArray(form.taskConfig.tasks) ? form.taskConfig.tasks : [];
+        updateTaskConfig("tasks", tasks.map((t) => (t.id === id ? { ...t, [field]: value } : t)));
+    };
+
+    const removeAnnotationTask = (id) => {
+        const tasks = Array.isArray(form.taskConfig.tasks) ? form.taskConfig.tasks : [];
+        updateTaskConfig("tasks", tasks.filter((t) => t.id !== id));
+    };
+
+    const toggleModality = (value) => {
+        const modalities = Array.isArray(form.taskConfig.modalities) ? form.taskConfig.modalities : [];
+        updateTaskConfig(
+            "modalities",
+            modalities.includes(value) ? modalities.filter((m) => m !== value) : [...modalities, value]
+        );
+    };
+
+    const toggleSourceType = (value) => {
+        const sources = Array.isArray(form.taskConfig.allowed_source_types) ? form.taskConfig.allowed_source_types : [];
+        updateTaskConfig(
+            "allowed_source_types",
+            sources.includes(value) ? sources.filter((s) => s !== value) : [...sources, value]
+        );
+    };
+
+    // ── Tracks (fair comparison groups, e.g. regional dialect tracks) ──────────
+    const addTrack = () => {
+        setForm((prev) => ({
+            ...prev,
+            tracks: [...prev.tracks, { id: Date.now(), name: "", minTeams: 5 }],
+        }));
+    };
+
+    const updateTrack = (id, field, value) => {
+        setForm((prev) => ({
+            ...prev,
+            tracks: prev.tracks.map((t) => (t.id === id ? { ...t, [field]: value } : t)),
+        }));
+    };
+
+    const removeTrack = (id) => {
+        setForm((prev) => ({ ...prev, tracks: prev.tracks.filter((t) => t.id !== id) }));
+    };
+
+    // ── Phases (ordered competition stages) ─────────────────────────────────────
+    const addPhase = () => {
+        setForm((prev) => ({
+            ...prev,
+            phases: [...prev.phases, { id: Date.now(), name: "", durationDays: 7, description: "" }],
+        }));
+    };
+
+    const updatePhase = (id, field, value) => {
+        setForm((prev) => ({
+            ...prev,
+            phases: prev.phases.map((p) => (p.id === id ? { ...p, [field]: value } : p)),
+        }));
+    };
+
+    const removePhase = (id) => {
+        setForm((prev) => ({ ...prev, phases: prev.phases.filter((p) => p.id !== id) }));
+    };
+
+    const movePhase = (id, direction) => {
+        setForm((prev) => {
+            const index = prev.phases.findIndex((p) => p.id === id);
+            const swapWith = index + direction;
+            if (index < 0 || swapWith < 0 || swapWith >= prev.phases.length) return prev;
+            const phases = [...prev.phases];
+            [phases[index], phases[swapWith]] = [phases[swapWith], phases[index]];
+            return { ...prev, phases };
+        });
+    };
+
+    const updateLicense = (field, value) => {
+        setForm((prev) => ({ ...prev, license: { ...prev.license, [field]: value } }));
+    };
+
     const toggleSkill = (skill) => {
         setForm((prev) => {
             const exists = prev.requiredSkills.includes(skill);
@@ -454,8 +648,9 @@ function CreateCompetition({ editMode = false }) {
 
     const validateStep = (step = currentStep) => {
         const nextErrors = {};
+        const key = wizardSteps[step]?.key;
 
-        if (step === 0) {
+        if (key === "basic") {
             if (!form.competitionName.trim())
                 nextErrors.competitionName = "Competition name is required.";
             if (!form.taskType)
@@ -468,8 +663,9 @@ function CreateCompetition({ editMode = false }) {
                 nextErrors.prizePool = "Prize pool cannot be negative.";
         }
 
-        // Step 1 — Task Config: validate audio tasks have at least one prompt
-        if (step === 1) {
+        // Task Config — validate audio tasks have at least one prompt, and that
+        // multi-task/multimodal competitions have a usable configuration.
+        if (key === "taskConfig") {
             const audioPromptTasks = ["AUDIO_SYNTHESIS", "SPEECH_EMOTION"];
             if (audioPromptTasks.includes(form.taskType)) {
                 const prompts = Array.isArray(form.taskConfig.prompts)
@@ -478,14 +674,77 @@ function CreateCompetition({ editMode = false }) {
                 if (!prompts.length)
                     nextErrors.prompts = "At least one prompt sentence is required for this task type.";
             }
+
+            if (form.taskType === "MULTI_TASK_ANNOTATION") {
+                const tasks = Array.isArray(form.taskConfig.tasks) ? form.taskConfig.tasks : [];
+                if (!tasks.length)
+                    nextErrors.tasks = "Define at least one annotation task.";
+                tasks.forEach((t) => {
+                    if (!t.name || !t.name.trim())
+                        nextErrors[`task-${t.id}`] = "Every task needs a name.";
+                    const labels = Array.isArray(t.labels) ? t.labels.filter((l) => l && l.trim()) : [];
+                    if (labels.length < 2)
+                        nextErrors[`taskLabels-${t.id}`] = "Every task needs at least two labels.";
+                });
+                if (!Array.isArray(form.taskConfig.modalities) || !form.taskConfig.modalities.length)
+                    nextErrors.modalities = "Select at least one modality (text and/or audio).";
+                if (form.taskConfig.modalities?.includes("audio") &&
+                    (!form.taskConfig.max_audio_seconds || Number(form.taskConfig.max_audio_seconds) <= 0))
+                    nextErrors.maxAudioSeconds = "Set a positive maximum audio length.";
+                if (form.taskConfig.modalities?.includes("text") &&
+                    (!form.taskConfig.max_transcript_words || Number(form.taskConfig.max_transcript_words) <= 0))
+                    nextErrors.maxTranscriptWords = "Set a positive maximum word count.";
+                if (!Array.isArray(form.taskConfig.allowed_source_types) || !form.taskConfig.allowed_source_types.length)
+                    nextErrors.allowedSourceTypes = "Select at least one allowed data source.";
+                if (!form.taskConfig.annotators_per_instance || Number(form.taskConfig.annotators_per_instance) < 1)
+                    nextErrors.annotatorsPerInstance = "At least one annotator per instance is required.";
+            }
         }
 
-        if (step === 2) {
+        if (key === "tracks") {
+            if (!form.tracks.length)
+                nextErrors.tracks = "Add at least one track, or turn off collaborative sourcing in Basic Info.";
+            form.tracks.forEach((t) => {
+                if (!t.name.trim())
+                    nextErrors[`trackName-${t.id}`] = "Track name is required.";
+                if (!t.minTeams || Number(t.minTeams) < 1)
+                    nextErrors[`trackMin-${t.id}`] = "Minimum teams must be at least 1.";
+            });
+        }
+
+        if (key === "phases") {
+            if (form.phases.length < 1)
+                nextErrors.phases = "Add at least one phase.";
+            form.phases.forEach((p) => {
+                if (!p.name.trim())
+                    nextErrors[`phaseName-${p.id}`] = "Phase name is required.";
+                if (!p.durationDays || Number(p.durationDays) <= 0)
+                    nextErrors[`phaseDuration-${p.id}`] = "Duration must be greater than 0 days.";
+            });
+        }
+
+        if (key === "license") {
+            if (!form.license.version.trim())
+                nextErrors.licenseVersion = "License version is required.";
+            if (!form.license.text.trim())
+                nextErrors.licenseText = "License text is required so participants can accept it before contributing data.";
+        }
+
+        if (key === "evaluation") {
             if (!form.primaryMetric)
                 nextErrors.primaryMetric = "Primary metric is required.";
+            if (form.collaborativeSourcing && form.evaluationMode === "data_quality_plus_model") {
+                const total = Number(form.dataQualityWeight) + Number(form.modelWeight);
+                if (total !== 100)
+                    nextErrors.weightSplit = `Data quality + model weights must add up to 100 (currently ${total}).`;
+                if (form.publicTestFraction !== "" && (Number(form.publicTestFraction) < 0 || Number(form.publicTestFraction) > 100))
+                    nextErrors.publicTestFraction = "Held-out test fraction must be between 0 and 100.";
+                if (!form.winnersPerTrack || Number(form.winnersPerTrack) < 1)
+                    nextErrors.winnersPerTrack = "At least 1 winner per track is required.";
+            }
         }
 
-        if (step === 3) {
+        if (key === "rules") {
             if (form.maxTeams !== "" && Number(form.maxTeams) < 0)
                 nextErrors.maxTeams = "Maximum teams cannot be negative.";
             if (form.minMembers !== "" && Number(form.minMembers) <= 0)
@@ -502,7 +761,7 @@ function CreateCompetition({ editMode = false }) {
                 nextErrors.mergeDeadline = "Merge deadline cannot be after end date.";
         }
 
-        if (step === 5) {
+        if (key === "datasets") {
             form.datasets.forEach((dataset, index) => {
                 if (!dataset.name.trim())
                     nextErrors[`datasetName-${dataset.id}`] = `Dataset ${index + 1} name is required.`;
@@ -511,7 +770,7 @@ function CreateCompetition({ editMode = false }) {
             });
         }
 
-        if (step === 6) {
+        if (key === "milestones") {
             if (form.validationDate && form.startDate && new Date(form.validationDate) < new Date(form.startDate))
                 nextErrors.validationDate = "Validation date cannot be before start date.";
             if (form.validationDate && form.endDate && new Date(form.validationDate) > new Date(form.endDate))
@@ -528,38 +787,76 @@ function CreateCompetition({ editMode = false }) {
         return Object.keys(nextErrors).length === 0;
     };
 
-    const buildPayload = () => ({
-        competition_name: form.competitionName,
-        task_type: form.taskType,
-        description: form.description,
-        start_date: form.startDate || null,
-        end_date: form.endDate || null,
-        prize_pool: form.prizePool === "" ? null : Number(form.prizePool),
+    const buildPayload = () => {
+        const taskConfig = serializeTaskConfig(form.taskType, form.taskConfig);
 
-        primary_metric: form.primaryMetric || null,
-        secondary_metric: form.secondaryMetric || null,
+        // Collaborative-sourcing sub-config nests inside task_config so the
+        // backend can keep treating dataset_config as one flexible JSON blob —
+        // consistent with how per-task annotation config already works.
+        if (form.collaborativeSourcing) {
+            taskConfig.collaborative = {
+                enabled: true,
+                tracks: form.tracks.map((t) => ({ id: t.id, name: t.name.trim(), minTeams: Number(t.minTeams) || 1 })),
+                phases: form.phases.map((p, i) => ({
+                    id: p.id,
+                    order: i + 1,
+                    name: p.name.trim(),
+                    durationDays: Number(p.durationDays) || 1,
+                    description: p.description || "",
+                })),
+                license: {
+                    required: true,
+                    version: form.license.version.trim(),
+                    text: form.license.text,
+                },
+                evaluation: {
+                    mode: form.evaluationMode,
+                    data_quality_weight: form.evaluationMode === "data_quality_plus_model" ? Number(form.dataQualityWeight) : null,
+                    model_weight: form.evaluationMode === "data_quality_plus_model" ? Number(form.modelWeight) : null,
+                    toto_enabled: form.evaluationMode === "data_quality_plus_model" ? !!form.totoEnabled : false,
+                    public_test_fraction: form.evaluationMode === "data_quality_plus_model" ? Number(form.publicTestFraction) : null,
+                    winners_per_track: form.evaluationMode === "data_quality_plus_model" ? Number(form.winnersPerTrack) : null,
+                },
+            };
+        }
 
-        max_teams: form.maxTeams === "" ? null : Number(form.maxTeams),
-        min_members: form.minMembers === "" ? null : Number(form.minMembers),
-        max_members: form.maxMembers === "" ? null : Number(form.maxMembers),
-        merge_deadline: form.mergeDeadline || null,
-        required_skills: form.requiredSkills,
-        max_submissions_per_day: form.maxSubmissionsPerDay === "" ? null : Number(form.maxSubmissionsPerDay),
-        allow_external_data: form.allowExternalData,
-        allow_pretrained_models: form.allowPretrainedModels,
-        require_code_sharing: form.requireCodeSharing,
-        additional_rules: form.additionalRules || null,
+        return {
+            competition_name: form.competitionName,
+            task_type: form.taskType,
+            description: form.description,
+            start_date: form.startDate || null,
+            end_date: form.endDate || null,
+            prize_pool: form.prizePool === "" ? null : Number(form.prizePool),
 
-        complexity_level: form.complexityLevel,
+            primary_metric: form.primaryMetric || null,
+            secondary_metric: form.secondaryMetric || null,
 
-        milestones: form.milestones,
-        validation_date: form.validationDate || null,
-        freeze_date: form.freezeDate || null,
+            max_teams: form.maxTeams === "" ? null : Number(form.maxTeams),
+            min_members: form.minMembers === "" ? null : Number(form.minMembers),
+            max_members: form.maxMembers === "" ? null : Number(form.maxMembers),
+            merge_deadline: form.mergeDeadline || null,
+            required_skills: form.requiredSkills,
+            max_submissions_per_day: form.maxSubmissionsPerDay === "" ? null : Number(form.maxSubmissionsPerDay),
+            allow_external_data: form.allowExternalData,
+            allow_pretrained_models: form.allowPretrainedModels,
+            require_code_sharing: form.requireCodeSharing,
+            additional_rules: form.additionalRules || null,
 
-        // Task-specific annotation config for this competition's widgets
-        task_config: serializeTaskConfig(form.taskType, form.taskConfig),
-        join_method: form.joinMethod || "auto",
-    });
+            complexity_level: form.complexityLevel,
+
+            // Collaborative competitions drive their timeline from Phases instead
+            // of the fixed milestone set, so milestones are left empty for them.
+            milestones: form.collaborativeSourcing ? [] : form.milestones,
+            validation_date: form.collaborativeSourcing ? null : (form.validationDate || null),
+            freeze_date: form.collaborativeSourcing ? null : (form.freezeDate || null),
+
+            // Task-specific annotation config for this competition's widgets,
+            // plus (when enabled) the nested collaborative-sourcing config.
+            task_config: taskConfig,
+            join_method: form.joinMethod || "auto",
+            collaborative_sourcing: form.collaborativeSourcing,
+        };
+    };
 
     const saveDraft = async () => {
         if (isEditMode) return;
@@ -591,7 +888,7 @@ function CreateCompetition({ editMode = false }) {
     };
 
     const submitCompetition = async () => {
-        for (let step = 0; step < steps.length; step++) {
+        for (let step = 0; step < wizardSteps.length; step++) {
             if (!validateStep(step)) {
                 setCurrentStep(step);
                 return;
@@ -642,7 +939,7 @@ function CreateCompetition({ editMode = false }) {
 
     const handleNext = () => {
         if (!validateStep(currentStep)) return;
-        if (currentStep < steps.length - 1) setCurrentStep((prev) => prev + 1);
+        if (currentStep < wizardSteps.length - 1) setCurrentStep((prev) => prev + 1);
     };
 
     const handlePrevious = () => {
@@ -732,6 +1029,26 @@ function CreateCompetition({ editMode = false }) {
                 />
                 <small>Optional. Leave empty if there is no prize.</small>
                 <ErrorMessage name="prizePool" />
+            </div>
+
+            <div className="toggle-row">
+                <div>
+                    <strong>Collaborative, Participant-Sourced Data</strong>
+                    <p>
+                        Turn this on for competitions like AMDC, where teams source, transcribe and
+                        annotate their own data (split into tracks, across phases, under a data
+                        license), and are ranked on data quality + model quality combined. Leave it
+                        off for a standard "bring your own model, we provide the data" competition.
+                    </p>
+                </div>
+                <label className="switch">
+                    <input
+                        type="checkbox"
+                        checked={form.collaborativeSourcing}
+                        onChange={(e) => updateField("collaborativeSourcing", e.target.checked)}
+                    />
+                    <span className="slider"></span>
+                </label>
             </div>
         </div>
     );
@@ -1116,9 +1433,351 @@ function CreateCompetition({ editMode = false }) {
                         </div>
                     </>
                 )}
+
+                {/* ── MULTI_TASK_ANNOTATION (generic AMDC-style config) ───── */}
+                {taskType === "MULTI_TASK_ANNOTATION" && (
+                    <>
+                        <div className="create-section">
+                            <label>Modalities <span className="required-star">*</span></label>
+                            <small>What kind of input does each instance carry?</small>
+                            <div className="tc-radio-group">
+                                {MODALITY_OPTIONS.map((opt) => {
+                                    const selected = (cfg.modalities || []).includes(opt.value);
+                                    return (
+                                        <label key={opt.value} className={`tc-radio-option ${selected ? "selected" : ""}`}>
+                                            <input type="checkbox" checked={selected} onChange={() => toggleModality(opt.value)} />
+                                            <div><strong>{opt.label}</strong></div>
+                                        </label>
+                                    );
+                                })}
+                            </div>
+                            <ErrorMessage name="modalities" />
+                        </div>
+
+                        <div className="section-header-row">
+                            <div>
+                                <h4 style={{ margin: 0 }}>Annotation Tasks</h4>
+                                <p className="create-card-subtitle" style={{ margin: 0 }}>
+                                    Each task gets its own label set (e.g. Sentiment, Sarcasm, Hate Speech)
+                                    and is annotated independently on every instance.
+                                </p>
+                            </div>
+                            <button type="button" className="soft-action-btn" onClick={addAnnotationTask}>
+                                + Add Task
+                            </button>
+                        </div>
+                        <ErrorMessage name="tasks" />
+
+                        {(cfg.tasks || []).map((task, idx) => (
+                            <div key={task.id} className="inner-panel">
+                                <div className="create-two-col">
+                                    <div className="create-section">
+                                        <label>Task {idx + 1} Name <span className="required-star">*</span></label>
+                                        <input
+                                            className={errors[`task-${task.id}`] ? "input-error" : ""}
+                                            type="text"
+                                            placeholder="e.g., Sentiment"
+                                            value={task.name}
+                                            onChange={(e) => updateAnnotationTask(task.id, "name", e.target.value)}
+                                        />
+                                        <ErrorMessage name={`task-${task.id}`} />
+                                    </div>
+                                    <div className="create-section" style={{ justifyContent: "flex-end" }}>
+                                        <button type="button" className="remove-btn" onClick={() => removeAnnotationTask(task.id)}>
+                                            Remove Task
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="create-section">
+                                    <label>Labels <span className="required-star">*</span></label>
+                                    <textarea
+                                        rows={3}
+                                        className={errors[`taskLabels-${task.id}`] ? "input-error" : ""}
+                                        placeholder={"Positive\nNegative\nNeutral"}
+                                        value={Array.isArray(task.labels) ? task.labels.join("\n") : ""}
+                                        onChange={(e) => updateAnnotationTask(task.id, "labels", e.target.value.split("\n").map((s) => s.trimEnd()))}
+                                    />
+                                    <small>One label per line. At least two labels required.</small>
+                                    <ErrorMessage name={`taskLabels-${task.id}`} />
+                                </div>
+                            </div>
+                        ))}
+
+                        <div className="inner-panel">
+                            <h4>Data Sourcing Rules</h4>
+                            <p style={{ margin: "0 0 14px", color: "#6b7280", fontSize: 13 }}>
+                                Contributors source, record, or adapt their own data — these rules keep
+                                every submitted instance comparable and legally publishable.
+                            </p>
+
+                            <div className="create-two-col">
+                                {(cfg.modalities || []).includes("audio") && (
+                                    <div className="create-section">
+                                        <label>Max Audio Length (seconds) <span className="required-star">*</span></label>
+                                        <input
+                                            className={errors.maxAudioSeconds ? "input-error" : ""}
+                                            type="number" min="1"
+                                            value={cfg.max_audio_seconds ?? 10}
+                                            onChange={(e) => updateTaskConfig("max_audio_seconds", parseFloat(e.target.value) || 0)}
+                                        />
+                                        <ErrorMessage name="maxAudioSeconds" />
+                                    </div>
+                                )}
+                                {(cfg.modalities || []).includes("text") && (
+                                    <div className="create-section">
+                                        <label>Max Transcript/Text Length (words) <span className="required-star">*</span></label>
+                                        <input
+                                            className={errors.maxTranscriptWords ? "input-error" : ""}
+                                            type="number" min="1"
+                                            value={cfg.max_transcript_words ?? 20}
+                                            onChange={(e) => updateTaskConfig("max_transcript_words", parseInt(e.target.value, 10) || 0)}
+                                        />
+                                        <ErrorMessage name="maxTranscriptWords" />
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="create-section">
+                                <label>Allowed Data Sources <span className="required-star">*</span></label>
+                                <div className="tc-radio-group">
+                                    {SOURCE_TYPE_OPTIONS.map((opt) => {
+                                        const selected = (cfg.allowed_source_types || []).includes(opt.value);
+                                        return (
+                                            <label key={opt.value} className={`tc-radio-option ${selected ? "selected" : ""}`}>
+                                                <input type="checkbox" checked={selected} onChange={() => toggleSourceType(opt.value)} />
+                                                <div><strong>{opt.label}</strong></div>
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                                <ErrorMessage name="allowedSourceTypes" />
+                            </div>
+
+                            <div className="toggle-row">
+                                <div>
+                                    <strong>Require Public Source Provenance</strong>
+                                    <p>Contributors must record a source link/timestamp for anything not self-recorded, so origin can be verified or removed on request.</p>
+                                </div>
+                                <label className="switch">
+                                    <input
+                                        type="checkbox"
+                                        checked={!!cfg.require_public_source_provenance}
+                                        onChange={(e) => updateTaskConfig("require_public_source_provenance", e.target.checked)}
+                                    />
+                                    <span className="slider"></span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div className="inner-panel">
+                            <h4>Annotation Protocol</h4>
+                            <div className="create-two-col">
+                                <div className="create-section">
+                                    <label>Annotators per Instance <span className="required-star">*</span></label>
+                                    <input
+                                        className={errors.annotatorsPerInstance ? "input-error" : ""}
+                                        type="number" min="1" max="5"
+                                        value={cfg.annotators_per_instance ?? 2}
+                                        onChange={(e) => updateTaskConfig("annotators_per_instance", parseInt(e.target.value, 10) || 1)}
+                                    />
+                                    <small>Members of the same team who must independently label each instance.</small>
+                                    <ErrorMessage name="annotatorsPerInstance" />
+                                </div>
+                                <div className="create-section" style={{ justifyContent: "center" }}>
+                                    <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                                        <span className="switch">
+                                            <input
+                                                type="checkbox"
+                                                checked={!!cfg.adjudication_enabled}
+                                                onChange={(e) => updateTaskConfig("adjudication_enabled", e.target.checked)}
+                                            />
+                                            <span className="slider" />
+                                        </span>
+                                        <div>
+                                            <strong>Adjudication on Disagreement</strong>
+                                            <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}>
+                                                A third same-team annotator resolves label disagreements.
+                                            </p>
+                                        </div>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </>
+                )}
             </div>
         );
     };
+
+    // ── Tracks step (only for collaborative-sourcing competitions) ─────────────
+    const renderTracks = () => (
+        <div className="create-card">
+            <div className="section-header-row">
+                <div>
+                    <h3 className="create-card-title">Tracks</h3>
+                    <p className="create-card-subtitle">
+                        Split teams into fair comparison groups (region, language, category...).
+                        A track that doesn't reach its minimum team count by the registration
+                        deadline should be dropped from the competition rather than merged.
+                    </p>
+                </div>
+                <button type="button" className="soft-action-btn" onClick={addTrack}>
+                    + Add Track
+                </button>
+            </div>
+
+            <ErrorMessage name="tracks" />
+
+            {form.tracks.length === 0 && (
+                <div className="tc-empty">
+                    <p>No tracks yet. Add at least one — e.g. "Algiers", "Oran", "Constantine".</p>
+                </div>
+            )}
+
+            {form.tracks.map((track, idx) => (
+                <div key={track.id} className="inner-panel">
+                    <div className="create-two-col">
+                        <div className="create-section">
+                            <label>Track {idx + 1} Name <span className="required-star">*</span></label>
+                            <input
+                                className={errors[`trackName-${track.id}`] ? "input-error" : ""}
+                                type="text"
+                                placeholder="e.g., Central / Algiers"
+                                value={track.name}
+                                onChange={(e) => updateTrack(track.id, "name", e.target.value)}
+                            />
+                            <ErrorMessage name={`trackName-${track.id}`} />
+                        </div>
+                        <div className="create-section">
+                            <label>Minimum Teams <span className="required-star">*</span></label>
+                            <input
+                                className={errors[`trackMin-${track.id}`] ? "input-error" : ""}
+                                type="number" min="1"
+                                value={track.minTeams}
+                                onChange={(e) => updateTrack(track.id, "minTeams", parseInt(e.target.value, 10) || 1)}
+                            />
+                            <small>Track is dropped from the competition if it doesn't reach this many teams.</small>
+                            <ErrorMessage name={`trackMin-${track.id}`} />
+                        </div>
+                    </div>
+                    <button type="button" className="remove-btn" onClick={() => removeTrack(track.id)}>
+                        Remove Track
+                    </button>
+                </div>
+            ))}
+        </div>
+    );
+
+    // ── Phases step (replaces fixed Milestones for collaborative competitions) ─
+    const renderPhases = () => (
+        <div className="create-card">
+            <div className="section-header-row">
+                <div>
+                    <h3 className="create-card-title">Competition Phases</h3>
+                    <p className="create-card-subtitle">
+                        Define the ordered stages participants move through (e.g. Data Collection
+                        → organizer break → Model Training). The platform drives what each page
+                        shows from this phase state, rather than hard-coded dates.
+                    </p>
+                </div>
+                <button type="button" className="soft-action-btn" onClick={addPhase}>
+                    + Add Phase
+                </button>
+            </div>
+
+            <ErrorMessage name="phases" />
+
+            {form.phases.map((phase, idx) => (
+                <div key={phase.id} className="inner-panel">
+                    <div className="create-two-col">
+                        <div className="create-section">
+                            <label>Phase {idx + 1} Name <span className="required-star">*</span></label>
+                            <input
+                                className={errors[`phaseName-${phase.id}`] ? "input-error" : ""}
+                                type="text"
+                                placeholder="e.g., Data Collection & Annotation"
+                                value={phase.name}
+                                onChange={(e) => updatePhase(phase.id, "name", e.target.value)}
+                            />
+                            <ErrorMessage name={`phaseName-${phase.id}`} />
+                        </div>
+                        <div className="create-section">
+                            <label>Duration (days) <span className="required-star">*</span></label>
+                            <input
+                                className={errors[`phaseDuration-${phase.id}`] ? "input-error" : ""}
+                                type="number" min="1"
+                                value={phase.durationDays}
+                                onChange={(e) => updatePhase(phase.id, "durationDays", parseInt(e.target.value, 10) || 1)}
+                            />
+                            <ErrorMessage name={`phaseDuration-${phase.id}`} />
+                        </div>
+                    </div>
+                    <div className="create-section">
+                        <label>Description</label>
+                        <textarea
+                            rows={2}
+                            placeholder="What happens during this phase, and what freezes at the end of it?"
+                            value={phase.description}
+                            onChange={(e) => updatePhase(phase.id, "description", e.target.value)}
+                        />
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                        <button type="button" className="soft-action-btn" disabled={idx === 0} onClick={() => movePhase(phase.id, -1)}>↑ Move Up</button>
+                        <button type="button" className="soft-action-btn" disabled={idx === form.phases.length - 1} onClick={() => movePhase(phase.id, 1)}>↓ Move Down</button>
+                        <button type="button" className="remove-btn" onClick={() => removePhase(phase.id)}>Remove Phase</button>
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+
+    // ── License step (mandatory data-usage license for collaborative sourcing) ─
+    const renderLicense = () => (
+        <div className="create-card">
+            <h3 className="create-card-title">Data Usage License</h3>
+            <p className="create-card-subtitle">
+                Since contributed data may be published as part of a benchmark, every
+                participant must accept this license, by version, before contributing.
+                Store the version they accepted — don't just store a boolean — since you
+                may need to update the license later.
+            </p>
+
+            <div className="create-section">
+                <label>License Version <span className="required-star">*</span></label>
+                <input
+                    className={errors.licenseVersion ? "input-error" : ""}
+                    type="text"
+                    placeholder="e.g., v1.0"
+                    value={form.license.version}
+                    onChange={(e) => updateLicense("version", e.target.value)}
+                />
+                <ErrorMessage name="licenseVersion" />
+            </div>
+
+            <div className="create-section">
+                <label>License Text <span className="required-star">*</span></label>
+                <textarea
+                    rows={10}
+                    className={errors.licenseText ? "input-error" : ""}
+                    placeholder="Describe what happens to contributed data: does it become part of a public benchmark? Do contributors retain any rights? Can they still download their own annotated data?"
+                    value={form.license.text}
+                    onChange={(e) => updateLicense("text", e.target.value)}
+                />
+                <ErrorMessage name="licenseText" />
+            </div>
+
+            <div className="toggle-row">
+                <div>
+                    <strong>Acceptance is Mandatory</strong>
+                    <p>Participants cannot contribute data until they accept this license version. This is always required for collaborative-sourcing competitions.</p>
+                </div>
+                <label className="switch">
+                    <input type="checkbox" checked readOnly disabled />
+                    <span className="slider"></span>
+                </label>
+            </div>
+        </div>
+    );
 
     const renderEvaluation = () => (
         <div className="create-card">
@@ -1165,6 +1824,104 @@ function CreateCompetition({ editMode = false }) {
                 </div>
                 <span className="metric-badge">Primary</span>
             </div>
+
+            {form.collaborativeSourcing && (
+                <div className="inner-panel">
+                    <h4>Leaderboard Scoring</h4>
+                    <p style={{ margin: "0 0 14px", color: "#6b7280", fontSize: 13 }}>
+                        Standard scoring ranks submissions on the metric above alone. Combined
+                        scoring also rewards the quality of the data each team contributed —
+                        useful whenever teams source their own dataset.
+                    </p>
+
+                    <div className="tc-radio-group">
+                        <label className={`tc-radio-option ${form.evaluationMode === "standard" ? "selected" : ""}`}>
+                            <input type="radio" name="evaluationMode" checked={form.evaluationMode === "standard"}
+                                onChange={() => updateField("evaluationMode", "standard")} />
+                            <div>
+                                <strong>Standard</strong>
+                                <span>Rank purely on submission performance against the primary metric.</span>
+                            </div>
+                        </label>
+                        <label className={`tc-radio-option ${form.evaluationMode === "data_quality_plus_model" ? "selected" : ""}`}>
+                            <input type="radio" name="evaluationMode" checked={form.evaluationMode === "data_quality_plus_model"}
+                                onChange={() => updateField("evaluationMode", "data_quality_plus_model")} />
+                            <div>
+                                <strong>Data Quality + Model Score (combined)</strong>
+                                <span>Train-on-One-Team-Only (TOTO) baseline scores each team's data; combine with their model's own score.</span>
+                            </div>
+                        </label>
+                    </div>
+
+                    {form.evaluationMode === "data_quality_plus_model" && (
+                        <>
+                            <div className="create-two-col">
+                                <div className="create-section">
+                                    <label>Data Quality Weight (%) <span className="required-star">*</span></label>
+                                    <input
+                                        type="number" min="0" max="100"
+                                        value={form.dataQualityWeight}
+                                        onChange={(e) => {
+                                            const v = parseInt(e.target.value, 10) || 0;
+                                            updateField("dataQualityWeight", v);
+                                            updateField("modelWeight", 100 - v);
+                                        }}
+                                    />
+                                </div>
+                                <div className="create-section">
+                                    <label>Model Score Weight (%) <span className="required-star">*</span></label>
+                                    <input
+                                        type="number" min="0" max="100"
+                                        value={form.modelWeight}
+                                        onChange={(e) => {
+                                            const v = parseInt(e.target.value, 10) || 0;
+                                            updateField("modelWeight", v);
+                                            updateField("dataQualityWeight", 100 - v);
+                                        }}
+                                    />
+                                </div>
+                            </div>
+                            <ErrorMessage name="weightSplit" />
+
+                            <div className="toggle-row">
+                                <div>
+                                    <strong>Run TOTO Baselines</strong>
+                                    <p>Train a baseline model on each team's data alone to produce the data quality score.</p>
+                                </div>
+                                <label className="switch">
+                                    <input type="checkbox" checked={form.totoEnabled}
+                                        onChange={(e) => updateField("totoEnabled", e.target.checked)} />
+                                    <span className="slider"></span>
+                                </label>
+                            </div>
+
+                            <div className="create-two-col">
+                                <div className="create-section">
+                                    <label>Held-Out Test Fraction (%)</label>
+                                    <input
+                                        className={errors.publicTestFraction ? "input-error" : ""}
+                                        type="number" min="0" max="100"
+                                        value={form.publicTestFraction}
+                                        onChange={(e) => updateField("publicTestFraction", parseInt(e.target.value, 10) || 0)}
+                                    />
+                                    <small>Share of each track's data held out for blind evaluation. Not disclosed to participants.</small>
+                                    <ErrorMessage name="publicTestFraction" />
+                                </div>
+                                <div className="create-section">
+                                    <label>Winners per Track <span className="required-star">*</span></label>
+                                    <input
+                                        className={errors.winnersPerTrack ? "input-error" : ""}
+                                        type="number" min="1"
+                                        value={form.winnersPerTrack}
+                                        onChange={(e) => updateField("winnersPerTrack", parseInt(e.target.value, 10) || 1)}
+                                    />
+                                    <ErrorMessage name="winnersPerTrack" />
+                                </div>
+                            </div>
+                        </>
+                    )}
+                </div>
+            )}
         </div>
     );
 
@@ -1529,14 +2286,17 @@ function CreateCompetition({ editMode = false }) {
     );
 
     const renderCurrentStep = () => {
-        switch (currentStep) {
-            case 0: return renderBasicInfo();
-            case 1: return renderTaskConfig();
-            case 2: return renderEvaluation();
-            case 3: return renderRules();
-            case 4: return renderComplexity();
-            case 5: return renderDatasets();
-            case 6: return renderMilestones();
+        switch (wizardSteps[currentStep]?.key) {
+            case "basic": return renderBasicInfo();
+            case "taskConfig": return renderTaskConfig();
+            case "tracks": return renderTracks();
+            case "phases": return renderPhases();
+            case "license": return renderLicense();
+            case "evaluation": return renderEvaluation();
+            case "rules": return renderRules();
+            case "complexity": return renderComplexity();
+            case "datasets": return renderDatasets();
+            case "milestones": return renderMilestones();
             default: return null;
         }
     };
@@ -1574,7 +2334,7 @@ function CreateCompetition({ editMode = false }) {
                     <div className="wizard-head">
                         <div className="wizard-title-row">
                             <h2>{isEditMode ? "Update Competition" : "Create Competition"}</h2>
-                            <span>Step {currentStep + 1} of {steps.length}</span>
+                            <span>Step {currentStep + 1} of {wizardSteps.length}</span>
                         </div>
 
                         <div className="wizard-progress">
@@ -1582,9 +2342,9 @@ function CreateCompetition({ editMode = false }) {
                         </div>
 
                         <div className="wizard-tabs">
-                            {steps.map((step, index) => (
+                            {wizardSteps.map((step, index) => (
                                 <button
-                                    key={step}
+                                    key={step.key}
                                     type="button"
                                     className={currentStep === index ? "wizard-tab active" : "wizard-tab"}
                                     onClick={() => {
@@ -1592,7 +2352,7 @@ function CreateCompetition({ editMode = false }) {
                                         if (validateStep(currentStep)) setCurrentStep(index);
                                     }}
                                 >
-                                    {step}
+                                    {step.label}
                                 </button>
                             ))}
                         </div>
@@ -1610,7 +2370,7 @@ function CreateCompetition({ editMode = false }) {
                             Previous
                         </button>
 
-                        {currentStep < steps.length - 1 ? (
+                        {currentStep < wizardSteps.length - 1 ? (
                             <button
                                 type="button"
                                 className="footer-primary-btn"

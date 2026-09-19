@@ -10,6 +10,19 @@ Changes vs previous version:
 
 schemas.py NOTE: add to CompetitionCreateIn:
     task_config: Optional[dict] = None
+    collaborative_sourcing: Optional[bool] = False
+
+Generic support for collaborative, participant-sourced competitions (e.g. AMDC):
+  - task_config["collaborative"] carries {enabled, tracks[], phases[], license{},
+    evaluation{}} and rides inside the existing dataset_config JSON column — no
+    schema migration needed. validate_collaborative_config() enforces the same
+    rules the CreateCompetition wizard enforces client-side (tracks need a
+    minimum team count, phases need a name + duration, a license version/text
+    is mandatory, and combined-mode evaluation weights must sum to 100).
+  - This keeps the platform generic: MULTI_TASK_ANNOTATION lets an organizer
+    define any number of simultaneous label sets (Sentiment/Sarcasm/Hate for
+    AMDC, or a completely different set for another competition) instead of
+    hard-coding one task type per competition.
 """
 
 import json
@@ -87,6 +100,20 @@ TASK_CONFIG_DEFAULTS: dict[str, dict] = {
         "event_types": ["speech", "music", "noise", "silence",
                         "applause", "laughter", "alarm", "animal"],
         "description": "",
+    },
+    "MULTI_TASK_ANNOTATION": {
+        "modalities": ["text", "audio"],
+        "tasks": [
+            {"id": 1, "name": "Sentiment", "labels": ["Positive", "Negative", "Neutral"]},
+            {"id": 2, "name": "Sarcasm", "labels": ["Yes", "No"]},
+            {"id": 3, "name": "Hate Speech", "labels": ["Hateful", "Not Hateful"]},
+        ],
+        "max_audio_seconds": 10,
+        "max_transcript_words": 20,
+        "allowed_source_types": ["public_platform", "self_recorded"],
+        "require_public_source_provenance": True,
+        "annotators_per_instance": 2,
+        "adjudication_enabled": True,
     },
 }
 
@@ -222,6 +249,56 @@ def validate_competition_payload(data: CompetitionCreateIn):
 
     if validation_date and freeze_date and freeze_date < validation_date:
         raise HTTPException(status_code=400, detail="Freeze date cannot be before validation date")
+
+    if getattr(data, "collaborative_sourcing", False):
+        validate_collaborative_config(getattr(data, "task_config", None) or {})
+
+
+def validate_collaborative_config(task_config: dict):
+    """
+    Server-side mirror of the CreateCompetition wizard's Tracks / Phases /
+    License / Evaluation validation, for competitions where participants
+    source and annotate their own data (the AMDC pattern). Runs whenever
+    collaborative_sourcing=True so a direct API call can't skip the checks
+    the UI enforces.
+    """
+    collab = (task_config or {}).get("collaborative") or {}
+
+    tracks = collab.get("tracks") or []
+    if not tracks:
+        raise HTTPException(status_code=400, detail="At least one track is required for a collaborative-sourcing competition")
+    for t in tracks:
+        if not (t.get("name") or "").strip():
+            raise HTTPException(status_code=400, detail="Every track needs a name")
+        if not t.get("minTeams") or int(t["minTeams"]) < 1:
+            raise HTTPException(status_code=400, detail=f"Track '{t.get('name')}' needs a minimum team count of at least 1")
+
+    phases = collab.get("phases") or []
+    if not phases:
+        raise HTTPException(status_code=400, detail="At least one phase is required for a collaborative-sourcing competition")
+    for p in phases:
+        if not (p.get("name") or "").strip():
+            raise HTTPException(status_code=400, detail="Every phase needs a name")
+        if not p.get("durationDays") or int(p["durationDays"]) <= 0:
+            raise HTTPException(status_code=400, detail=f"Phase '{p.get('name')}' needs a duration greater than 0 days")
+
+    license_cfg = collab.get("license") or {}
+    if not (license_cfg.get("version") or "").strip():
+        raise HTTPException(status_code=400, detail="A license version is required before contributors can accept it")
+    if not (license_cfg.get("text") or "").strip():
+        raise HTTPException(status_code=400, detail="License text is required for a collaborative-sourcing competition")
+
+    evaluation = collab.get("evaluation") or {}
+    if evaluation.get("mode") == "data_quality_plus_model":
+        dq = evaluation.get("data_quality_weight")
+        mw = evaluation.get("model_weight")
+        if dq is None or mw is None or (float(dq) + float(mw)) != 100:
+            raise HTTPException(status_code=400, detail="Data quality weight + model weight must add up to 100")
+        fraction = evaluation.get("public_test_fraction")
+        if fraction is not None and not (0 <= float(fraction) <= 100):
+            raise HTTPException(status_code=400, detail="Held-out test fraction must be between 0 and 100")
+        if not evaluation.get("winners_per_track") or int(evaluation["winners_per_track"]) < 1:
+            raise HTTPException(status_code=400, detail="At least 1 winner per track is required")
 
 
 def _clean_list_values(cfg: dict) -> dict:
