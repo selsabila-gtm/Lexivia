@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
-import "./CreateCompetition.css";
+import "../styles/CreateCompetition.css";
 import DatasetSection from "./DatasetSection";
 import { supabase } from "../config/supabase";
 
@@ -14,8 +14,10 @@ async function getFreshToken() {
 
 // The wizard is dynamic: Tracks, Phases, and Data Collection are independent
 // capabilities an organizer can turn on separately, each adding its own step.
-// Phases, when enabled, replaces the fixed Milestones step with an ordered,
-// organizer-defined timeline.
+// Milestones has been removed as a concept — Phases (an ordered, named,
+// organizer-defined timeline) is the only timeline mechanism now. A
+// competition that doesn't enable Phases simply uses its start/end dates,
+// with no fabricated timeline shown anywhere.
 function getSteps(form) {
     const s = [
         { key: "basic", label: "Basic Info" },
@@ -37,9 +39,6 @@ function getSteps(form) {
     s.push({ key: "rules", label: "Rules" });
     s.push({ key: "complexity", label: "Complexity" });
     s.push({ key: "datasets", label: "Datasets" });
-    if (!form.phasesEnabled) {
-        s.push({ key: "milestones", label: "Milestones" });
-    }
     return s;
 }
 
@@ -305,7 +304,6 @@ const initialForm = {
     winnersPerTrack: 1,
 
     datasets: [],
-    milestones: [],
     validationDate: "",
     freezeDate: "",
 };
@@ -421,7 +419,6 @@ function mapCompetitionToForm(c) {
         winnersPerTrack: evalCfg.winners_per_track ?? 1,
 
         datasets: [],
-        milestones: safeArrayJson(c.milestones_json),
         validationDate: c.validation_date || "",
         freezeDate: c.freeze_date || "",
     };
@@ -763,29 +760,6 @@ function CreateCompetition({ editMode = false }) {
         }));
     };
 
-    const addMilestone = () => {
-        setForm((prev) => ({
-            ...prev,
-            milestones: [...prev.milestones, { id: Date.now(), title: "", date: "" }],
-        }));
-    };
-
-    const updateMilestone = (id, field, value) => {
-        setForm((prev) => ({
-            ...prev,
-            milestones: prev.milestones.map((item) =>
-                item.id === id ? { ...item, [field]: value } : item
-            ),
-        }));
-    };
-
-    const removeMilestone = (id) => {
-        setForm((prev) => ({
-            ...prev,
-            milestones: prev.milestones.filter((item) => item.id !== id),
-        }));
-    };
-
     const validateStep = (step = currentStep) => {
         const nextErrors = {};
         const key = wizardSteps[step]?.key;
@@ -924,7 +898,7 @@ function CreateCompetition({ editMode = false }) {
             });
         }
 
-        if (key === "milestones") {
+        if (key === "evaluation" && !form.phasesEnabled) {
             if (form.validationDate && form.startDate && new Date(form.validationDate) < new Date(form.startDate))
                 nextErrors.validationDate = "Validation date cannot be before start date.";
             if (form.validationDate && form.endDate && new Date(form.validationDate) > new Date(form.endDate))
@@ -1018,9 +992,9 @@ function CreateCompetition({ editMode = false }) {
 
             complexity_level: form.complexityLevel,
 
-            // Phases, when enabled, drives the timeline instead of the fixed
-            // milestone set, so milestones are left empty for it.
-            milestones: form.phasesEnabled ? [] : form.milestones,
+            // Phases, when enabled, drives the timeline. Otherwise these two
+            // plain cutoff dates (set in the Evaluation step) are the only
+            // extra timeline info the competition carries.
             validation_date: form.phasesEnabled ? null : (form.validationDate || null),
             freeze_date: form.phasesEnabled ? null : (form.freezeDate || null),
 
@@ -1240,8 +1214,7 @@ function CreateCompetition({ editMode = false }) {
                     <strong>Phases</strong>
                     <p>
                         Replace the single start/end date with an ordered, named timeline
-                        (e.g. Data Collection → Training → Leaderboard) instead of one flat
-                        milestone list.
+                        (e.g. Data Collection → Training → Leaderboard).
                     </p>
                 </div>
                 <label className="switch">
@@ -2227,6 +2200,38 @@ function CreateCompetition({ editMode = false }) {
                     )}
                 </div>
             )}
+
+            {!form.phasesEnabled && (
+                <div className="inner-panel">
+                    <h4>Timeline Cutoffs (optional)</h4>
+                    <p className="create-card-subtitle">
+                        This competition isn't using the Phases timeline, so these are the
+                        only extra dates shown on the details page besides start/end.
+                    </p>
+                    <div className="create-two-col">
+                        <div className="create-section">
+                            <label>Model Validation Cutoff</label>
+                            <input
+                                className={errors.validationDate ? "input-error" : ""}
+                                type="date"
+                                value={form.validationDate}
+                                onChange={(e) => updateField("validationDate", e.target.value)}
+                            />
+                            <ErrorMessage name="validationDate" />
+                        </div>
+                        <div className="create-section">
+                            <label>Final Leaderboard Freeze</label>
+                            <input
+                                className={errors.freezeDate ? "input-error" : ""}
+                                type="date"
+                                value={form.freezeDate}
+                                onChange={(e) => updateField("freezeDate", e.target.value)}
+                            />
+                            <ErrorMessage name="freezeDate" />
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 
@@ -2519,77 +2524,6 @@ function CreateCompetition({ editMode = false }) {
         );
     };
 
-    const renderMilestones = () => (
-        <div className="create-card">
-            <div className="section-header-row">
-                <div>
-                    <h3 className="create-card-title">Key Milestones</h3>
-                    <p className="create-card-subtitle">Optional. Add validation and leaderboard dates.</p>
-                </div>
-                <button type="button" className="soft-action-btn" onClick={addMilestone}>
-                    + Add Milestone
-                </button>
-            </div>
-
-            <div className="milestone-grid">
-                <div className="milestone-box">
-                    <strong>Submission Open</strong>
-                    <span>{form.startDate ? form.startDate : "Set start date in Step 1"}</span>
-                </div>
-
-                <div className="milestone-box">
-                    <strong>Model Validation Phase</strong>
-                    <input
-                        className={errors.validationDate ? "input-error" : ""}
-                        type="date"
-                        value={form.validationDate}
-                        onChange={(e) => updateField("validationDate", e.target.value)}
-                    />
-                    <ErrorMessage name="validationDate" />
-                </div>
-
-                <div className="milestone-box">
-                    <strong>Final Leaderboard Freeze</strong>
-                    <input
-                        className={errors.freezeDate ? "input-error" : ""}
-                        type="date"
-                        value={form.freezeDate}
-                        onChange={(e) => updateField("freezeDate", e.target.value)}
-                    />
-                    <ErrorMessage name="freezeDate" />
-                </div>
-
-                <div className="milestone-box">
-                    <strong>Competition End</strong>
-                    <span>{form.endDate ? form.endDate : "Set end date in Step 1"}</span>
-                </div>
-            </div>
-
-            {form.milestones.length > 0 && (
-                <div className="extra-milestones">
-                    {form.milestones.map((item) => (
-                        <div key={item.id} className="extra-milestone-item">
-                            <input
-                                type="text"
-                                value={item.title}
-                                placeholder="Milestone title"
-                                onChange={(e) => updateMilestone(item.id, "title", e.target.value)}
-                            />
-                            <input
-                                type="date"
-                                value={item.date}
-                                onChange={(e) => updateMilestone(item.id, "date", e.target.value)}
-                            />
-                            <button type="button" className="remove-btn" onClick={() => removeMilestone(item.id)}>
-                                Remove
-                            </button>
-                        </div>
-                    ))}
-                </div>
-            )}
-        </div>
-    );
-
     const renderCurrentStep = () => {
         switch (wizardSteps[currentStep]?.key) {
             case "basic": return renderBasicInfo();
@@ -2602,7 +2536,6 @@ function CreateCompetition({ editMode = false }) {
             case "rules": return renderRules();
             case "complexity": return renderComplexity();
             case "datasets": return renderDatasets();
-            case "milestones": return renderMilestones();
             default: return null;
         }
     };

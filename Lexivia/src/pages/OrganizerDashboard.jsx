@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
-import "./OrganizerDashboard.css";
+import "../styles/OrganizerDashboard.css";
 
 const API = "http://127.0.0.1:8000";
 

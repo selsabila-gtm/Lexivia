@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import Topbar from "../components/Topbar";
-import "./Dashboard.css";
+import "../styles/Dashboard.css";
 import { supabase } from "../config/supabase";
 
 import {

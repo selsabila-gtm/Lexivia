@@ -122,7 +122,7 @@ async def create_audio_sample(
     result = await validate_sample(
         text_content=ann_dict.get("transcript", "placeholder"),
         annotation=ann_dict,
-        task_type="AUDIO SYNTHESIS",
+        task_type="AUDIO_SYNTHESIS",
         run_ai=False,
     )
 
@@ -153,6 +153,7 @@ async def create_audio_sample(
         contributor_id=str(current_user.id),
         audio_url=storage_path,
         audio_duration=audio_duration,
+        text_content=ann_dict.get("transcript") or None,
         annotation=ann_dict,                     # jsonb — store as dict
         status=derived_status,
         quality_score=float(result.quality_score) if result.quality_score is not None else None,

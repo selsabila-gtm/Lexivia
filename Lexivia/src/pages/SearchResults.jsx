@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import Topbar from "../components/Topbar";
-import "./SearchResults.css";
+import "../styles/SearchResults.css";
 
 function SearchResults() {
     const location = useLocation();

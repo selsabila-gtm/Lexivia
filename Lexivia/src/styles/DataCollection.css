@@ -982,3 +982,67 @@ input[type="range"] {
     grid-template-columns: 1fr;
   }
 }
+/* ── MultiTaskWidget additions ───────────────────────────────── */
+.dc-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.dc-over-limit {
+    color: #d94f4f;
+    font-weight: 700;
+}
+
+.dc-audio-recorder {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.dc-record-btn {
+    height: 40px;
+    padding: 0 18px;
+    border-radius: 10px;
+    border: 1.5px solid #dde6fb;
+    background: #eef3ff;
+    color: #1359db;
+    font-weight: 700;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.dc-record-btn.recording {
+    background: #fff2f2;
+    border-color: #ffd5d5;
+    color: #d94f4f;
+}
+
+.dc-audio-preview {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    color: #6f778c;
+    font-weight: 600;
+}
+
+.dc-remove-btn {
+    border: none;
+    background: transparent;
+    color: #1359db;
+    font-weight: 700;
+    font-size: 12px;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.dc-license-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    font-size: 12px;
+    color: #4f586f;
+    font-weight: 600;
+    line-height: 1.5;
+}

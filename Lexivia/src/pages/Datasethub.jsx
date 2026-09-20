@@ -16,7 +16,7 @@ import CompetitionSidebar from "../components/CompetitionSidebar";
 import CompetitionTopbar from "../components/CompetitionTopbar";
 import DataHealthPanel from "../components/DataHealthPanel";
 import RawSamplesTable from "../components/RawSamplesTable";
-import "./DatasetHub.css";
+import "../styles/DatasetHub.css";
 
 const API = "http://127.0.0.1:8000";
 function authHeader() {

@@ -22,7 +22,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import CompetitionSidebar from "../components/CompetitionSidebar";
-import "./DataCollection.css";
+import "../styles/DataCollection.css";
 import CompetitionTopbar from "../components/CompetitionTopbar";
 
 import TextClassificationWidget from "./widgets/TextClassificationWidget";
@@ -35,6 +35,7 @@ import AudioSynthesisWidget from "./widgets/AudioSynthesisWidget";
 import AudioTranscriptionWidget from "./widgets/AudioTranscriptionWidget";
 import SpeechEmotionWidget from "./widgets/SpeechEmotionWidget";
 import AudioEventDetectionWidget from "./widgets/AudioEventDetectionWidget";
+import MultiTaskWidget from "./widgets/MultiTaskWidget";
 import BulkImportPanel from "./widgets/BulkImportPanel";
 import ScrapingAssistantPanel from "./widgets/ScrapingAssistantPanel";
 
@@ -56,6 +57,12 @@ const WIDGET_MAP = {
   AUDIO_TRANSCRIPTION: AudioTranscriptionWidget,
   SPEECH_EMOTION: SpeechEmotionWidget,
   AUDIO_EVENT_DETECTION: AudioEventDetectionWidget,
+  // These two task types are how the wizard represents an organizer-defined
+  // *combination* of tasks and modalities (e.g. AMDC: sentiment + sarcasm +
+  // hate speech, over text + audio at once) — they need the generic widget,
+  // not a fixed single-label/single-modality one.
+  MULTI_TASK_ANNOTATION: MultiTaskWidget,
+  CUSTOM: MultiTaskWidget,
 };
 
 const TASK_LABELS = {
@@ -69,6 +76,8 @@ const TASK_LABELS = {
   AUDIO_TRANSCRIPTION: "Audio Transcription",
   SPEECH_EMOTION: "Speech Emotion",
   AUDIO_EVENT_DETECTION: "Audio Event Detection",
+  MULTI_TASK_ANNOTATION: "Multi-Task / Multimodal Annotation",
+  CUSTOM: "Custom Competition",
 };
 
 

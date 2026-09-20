@@ -187,6 +187,20 @@ def competition_display_dict(competition: Competition) -> dict:
 
     base = {c.name: getattr(competition, c.name) for c in competition.__table__.columns}
 
+    # `dataset_config` is the column name, but since the CreateCompetition
+    # wizard was extended it actually stores the full organizer-defined task
+    # config: tracks, phases, data_collection rules, license, and evaluation
+    # scoring. Parse it once here so every consumer (details page, teams
+    # panel, etc.) gets a real dict under `task_config` instead of having to
+    # re-parse (or silently ignore, as the details page used to) a raw JSON
+    # string.
+    try:
+        task_config = json.loads(competition.dataset_config or "{}")
+        if not isinstance(task_config, dict):
+            task_config = {}
+    except (TypeError, ValueError):
+        task_config = {}
+
     base.update(
         {
             "category": task_category(competition),
@@ -199,6 +213,10 @@ def competition_display_dict(competition: Competition) -> dict:
             "muted": False,
             "datasets_json": "[]",
             "join_method": competition.join_method or "auto",
+            "task_config": task_config,
+            "tracks_enabled": bool(task_config.get("tracks_enabled")),
+            "phases_enabled": bool(task_config.get("phases_enabled")),
+            "data_collection_enabled": bool(task_config.get("data_collection")) and "data_collection" in task_config,
         }
     )
 
@@ -634,101 +652,95 @@ def _raise_if_team_members_already_joined(
     )
 
 
-def _do_join_competition(db: Session, competition: Competition, user_id: str, team_id=None):
-    db.add(
-        CompetitionParticipant(
-            competition_id=competition.id,
-            user_id=user_id,
-            team_id=team_id,
-            status="joined",
-            joined_at=datetime.utcnow().isoformat(),
-        )
+def _do_join_competition(db: Session, competition: Competition, user_id: str, team_id=None, track_id=None):
+    participant = CompetitionParticipant(
+        competition_id=competition.id,
+        user_id=user_id,
+        team_id=team_id,
+        status="joined",
+        joined_at=datetime.utcnow().isoformat(),
+    )
+    db.add(participant)
+
+    if track_id:
+        db.flush()
+        _set_participant_track_id(db, participant.id, track_id)
+
+    return participant
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Track assignment helpers
+#
+# Tracks (e.g. regional dialect tracks) live inside task_config, not as their
+# own table — but WHICH track a team registered for has to be recorded
+# somewhere so organizers can count teams per track and remove tracks that
+# never reach their minimum. That requires a `track_id` column on
+# competition_participants (see migrations/2026_add_track_support.sql).
+#
+# These helpers check for that column once per process and no-op instead of
+# raising if the migration hasn't been applied yet, so track selection is
+# additive and never breaks a plain join.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_track_column_cache = {"exists": None}
+
+
+def _participants_have_track_column(db: Session) -> bool:
+    if _track_column_cache["exists"] is None:
+        try:
+            row = db.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'competition_participants' AND column_name = 'track_id'"
+                )
+            ).first()
+            _track_column_cache["exists"] = row is not None
+        except Exception:
+            _track_column_cache["exists"] = False
+    return _track_column_cache["exists"]
+
+
+def _set_participant_track_id(db: Session, participant_id, track_id):
+    if not _participants_have_track_column(db):
+        return
+    db.execute(
+        text("UPDATE competition_participants SET track_id = :tid WHERE id = :pid"),
+        {"tid": str(track_id), "pid": participant_id},
     )
 
-def _format_user_names(db: Session, user_ids: list[str]) -> str:
-    from models import UserProfile
 
-    if not user_ids:
-        return ""
-
-    profiles = (
-        db.query(UserProfile)
-        .filter(UserProfile.user_id.in_([str(uid) for uid in user_ids]))
-        .all()
-    )
-
-    by_id = {str(p.user_id): p for p in profiles}
-
-    labels = []
-    for uid in user_ids:
-        p = by_id.get(str(uid))
-        if p:
-            labels.append(p.full_name or p.email or str(uid))
-        else:
-            labels.append(str(uid))
-
-    return ", ".join(labels)
+def _get_track_team_counts(db: Session, competition_id: str) -> dict:
+    """Returns {track_id: distinct_team_count} for a competition. Counts
+    individual (non-team) participants too, keyed the same way, so tracks
+    work whether or not the competition requires teams."""
+    if not _participants_have_track_column(db):
+        return {}
+    rows = db.execute(
+        text(
+            "SELECT track_id, COUNT(DISTINCT COALESCE(team_id, user_id)) AS cnt "
+            "FROM competition_participants "
+            "WHERE competition_id = :cid AND track_id IS NOT NULL "
+            "GROUP BY track_id"
+        ),
+        {"cid": competition_id},
+    ).all()
+    return {str(r.track_id): int(r.cnt) for r in rows}
 
 
-def _raise_if_team_has_organizer(
-    db: Session,
-    competition_id: str,
-    member_rows,
-):
-    member_ids = [str(m.user_id) for m in member_rows]
-
-    organizer_rows = (
-        db.query(CompetitionOrganizer)
-        .filter(
-            CompetitionOrganizer.competition_id == competition_id,
-            CompetitionOrganizer.user_id.in_(member_ids),
-        )
-        .all()
-    )
-
-    organizer_ids = [str(row.user_id) for row in organizer_rows]
-
-    if organizer_ids:
-        names = _format_user_names(db, organizer_ids)
+def _validate_track_selection(task_config: dict, track_id):
+    """Raises if track_id doesn't refer to a real, still-active track."""
+    if not track_id:
+        return
+    tracks = (task_config or {}).get("tracks") or []
+    match = next((t for t in tracks if str(t.get("id")) == str(track_id)), None)
+    if not match:
+        raise HTTPException(status_code=400, detail="Selected track does not exist for this competition")
+    if match.get("active") is False:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "This team cannot join because one or more team members are organizers "
-                f"of this competition: {names}. Remove them from the team or choose another team."
-            ),
+            detail=f"Track '{match.get('name')}' did not reach its minimum team count and is no longer accepting teams",
         )
-
-
-def _raise_if_team_members_already_joined(
-    db: Session,
-    competition_id: str,
-    team_id: str,
-    member_rows,
-):
-    member_ids = [str(m.user_id) for m in member_rows]
-
-    existing_rows = (
-        db.query(CompetitionParticipant)
-        .filter(
-            CompetitionParticipant.competition_id == competition_id,
-            CompetitionParticipant.user_id.in_(member_ids),
-        )
-        .all()
-    )
-
-    if not existing_rows:
-        return
-
-    existing_ids = [str(row.user_id) for row in existing_rows]
-    names = _format_user_names(db, existing_ids)
-
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            "This team cannot join because one or more team members have already joined "
-            f"this competition: {names}."
-        ),
-    ) 
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1012,6 +1024,13 @@ def join_competition(
                 detail=f"You are missing required skill(s): {', '.join(sorted(missing))}",
             )
 
+    track_id = str(body.get("track_id") or "").strip() or None
+    if track_id:
+        d = competition_display_dict(competition)
+        if not d.get("tracks_enabled"):
+            raise HTTPException(status_code=400, detail="This competition does not use tracks")
+        _validate_track_selection(d.get("task_config"), track_id)
+
     join_method = competition.join_method or "auto"
 
     if join_method == "manual":
@@ -1054,7 +1073,7 @@ def join_competition(
         db.commit()
         return {"message": "Join request submitted. Waiting for organizer approval.", "status": "pending"}
 
-    _do_join_competition(db, competition, str(current_user.id), team_id=None)
+    _do_join_competition(db, competition, str(current_user.id), team_id=None, track_id=track_id)
     db.commit()
     return {"message": "Joined competition successfully", "status": "joined"}
 
@@ -1215,6 +1234,13 @@ def join_competition_as_team(
                 ),
             )
 
+    track_id = str(body.get("track_id") or "").strip() or None
+    if track_id:
+        d = competition_display_dict(competition)
+        if not d.get("tracks_enabled"):
+            raise HTTPException(status_code=400, detail="This competition does not use tracks")
+        _validate_track_selection(d.get("task_config"), track_id)
+
     join_method = competition.join_method or "auto"
     message = (body.get("message") or "").strip() or None
 
@@ -1268,6 +1294,7 @@ def join_competition_as_team(
             competition,
             str(m.user_id),
             team_id=team_id,
+            track_id=track_id,
         )
 
     db.commit()
@@ -1468,6 +1495,175 @@ def reject_join_request(
     return {"message": "Join request rejected"}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Joined teams (organizer only) — distinct from list_join_requests, which only
+# shows *pending* requests. This shows who has actually joined.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/competitions/{competition_id}/teams")
+def list_joined_teams(
+    competition_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    from models import UserProfile
+    from models_teams import Team, TeamMember
+
+    competition = db.query(Competition).filter(Competition.id == competition_id).first()
+    if not competition:
+        raise HTTPException(status_code=404, detail="Competition not found")
+
+    if get_user_role(db, competition_id, current_user.id) != "organizer":
+        raise HTTPException(status_code=403, detail="Only the organizer can view joined teams")
+
+    participants = (
+        db.query(CompetitionParticipant)
+        .filter(CompetitionParticipant.competition_id == competition_id)
+        .order_by(CompetitionParticipant.joined_at.asc())
+        .all()
+    )
+
+    track_by_participant_id = {}
+    if _participants_have_track_column(db):
+        rows = db.execute(
+            text(
+                "SELECT id, track_id FROM competition_participants "
+                "WHERE competition_id = :cid"
+            ),
+            {"cid": competition_id},
+        ).all()
+        track_by_participant_id = {r.id: r.track_id for r in rows}
+
+    task_config = competition_display_dict(competition).get("task_config") or {}
+    track_name_by_id = {str(t.get("id")): t.get("name") for t in (task_config.get("tracks") or [])}
+
+    teams_by_key = {}
+    solo_entries = []
+
+    for p in participants:
+        profile = db.query(UserProfile).filter(UserProfile.user_id == p.user_id).first()
+        member = {
+            "user_id": p.user_id,
+            "username": profile.full_name if profile else p.user_id,
+            "email": profile.email if profile else None,
+        }
+        track_id = track_by_participant_id.get(p.id)
+        track_name = track_name_by_id.get(str(track_id)) if track_id else None
+
+        if p.team_id:
+            key = str(p.team_id)
+            if key not in teams_by_key:
+                team = db.query(Team).filter(Team.id == int(p.team_id)).first()
+                teams_by_key[key] = {
+                    "team_id": p.team_id,
+                    "team_name": team.name if team else f"Team #{p.team_id}",
+                    "members": [],
+                    "joined_at": p.joined_at,
+                    "status": p.status,
+                    "track_id": track_id,
+                    "track_name": track_name,
+                }
+            teams_by_key[key]["members"].append(member)
+        else:
+            solo_entries.append({
+                "team_id": None,
+                "team_name": None,
+                "members": [member],
+                "joined_at": p.joined_at,
+                "status": p.status,
+                "track_id": track_id,
+                "track_name": track_name,
+            })
+
+    teams = list(teams_by_key.values()) + solo_entries
+
+    return {
+        "competition_id": competition_id,
+        "total_teams": len(teams_by_key),
+        "total_solo_participants": len(solo_entries),
+        "teams": teams,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tracks (organizer + participant visible)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/competitions/{competition_id}/tracks")
+def get_tracks(
+    competition_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    competition = db.query(Competition).filter(Competition.id == competition_id).first()
+    if not competition:
+        raise HTTPException(status_code=404, detail="Competition not found")
+
+    d = competition_display_dict(competition)
+    task_config = d.get("task_config") or {}
+    tracks = task_config.get("tracks") or []
+    counts = _get_track_team_counts(db, competition_id)
+
+    result = []
+    for t in tracks:
+        tid = str(t.get("id"))
+        result.append({
+            "id": t.get("id"),
+            "name": t.get("name"),
+            "min_teams": t.get("minTeams"),
+            "team_count": counts.get(tid, 0),
+            "active": t.get("active", True),
+        })
+
+    return {"tracks_enabled": d.get("tracks_enabled"), "tracks": result}
+
+
+@router.post("/competitions/{competition_id}/tracks/finalize")
+def finalize_tracks(
+    competition_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Organizer action (AMDC Section 5/10): once registration closes, any track
+    that hasn't reached its minimum team count is deactivated — it is removed
+    from the competition rather than merged with another track. Teams already
+    registered to a deactivated track keep their `joined` status but the
+    track itself stops accepting new registrations (enforced by
+    _validate_track_selection on future join calls).
+    """
+    competition = db.query(Competition).filter(Competition.id == competition_id).first()
+    if not competition:
+        raise HTTPException(status_code=404, detail="Competition not found")
+
+    if get_user_role(db, competition_id, current_user.id) != "organizer":
+        raise HTTPException(status_code=403, detail="Only the organizer can finalize tracks")
+
+    d = competition_display_dict(competition)
+    task_config = d.get("task_config") or {}
+    tracks = task_config.get("tracks") or []
+    if not tracks:
+        raise HTTPException(status_code=400, detail="This competition has no tracks configured")
+
+    counts = _get_track_team_counts(db, competition_id)
+
+    updated_tracks = []
+    for t in tracks:
+        tid = str(t.get("id"))
+        count = counts.get(tid, 0)
+        min_teams = int(t.get("minTeams") or 1)
+        t = dict(t)
+        t["active"] = count >= min_teams
+        t["team_count"] = count
+        updated_tracks.append(t)
+
+    task_config["tracks"] = updated_tracks
+    # `prompts` never lives in this JSON blob (see build_competition_record),
+    # so it's safe to write the whole dict straight back.
+    competition.dataset_config = json.dumps(task_config)
+    db.commit()
+
+    return {"tracks": updated_tracks}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

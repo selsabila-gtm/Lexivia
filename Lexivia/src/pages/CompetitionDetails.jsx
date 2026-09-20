@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import "./CompetitionDetails.css";
+import "../styles/CompetitionDetails.css";
 import Topbar from "../components/Topbar";
 import Sidebar from "../components/Sidebar";
 
@@ -70,6 +70,12 @@ function CompetitionDetails() {
 
     const [leaderboard, setLeaderboard] = useState([]);
     const [leaderboardLoading, setLeaderboardLoading] = useState(false);
+
+    const [joinedTeams, setJoinedTeams] = useState(null);
+    const [joinedTeamsLoading, setJoinedTeamsLoading] = useState(false);
+
+    const [tracks, setTracks] = useState([]);
+    const [tracksLoading, setTracksLoading] = useState(false);
 
     useEffect(() => {
         window.scrollTo(0, 0);
@@ -215,6 +221,56 @@ function CompetitionDetails() {
             })
             .finally(() => setLeaderboardLoading(false));
     }, [competitionId]);
+
+    useEffect(() => {
+        const token = getToken();
+
+        if (!token || monitoring?.is_organizer !== true) return;
+
+        setJoinedTeamsLoading(true);
+
+        fetch(`${API}/competitions/${competitionId}/teams`, {
+            headers: { Authorization: `Bearer ${token}` },
+        })
+            .then((res) => {
+                if (!res.ok) throw new Error("Could not load joined teams");
+                return res.json();
+            })
+            .then((data) => setJoinedTeams(data))
+            .catch((err) => {
+                console.error("Joined teams fetch error:", err);
+                setJoinedTeams(null);
+            })
+            .finally(() => setJoinedTeamsLoading(false));
+    }, [competitionId, monitoring?.is_organizer]);
+
+    useEffect(() => {
+        const token = getToken();
+
+        if (!token || !competition?.tracks_enabled) return;
+
+        setTracksLoading(true);
+
+        fetch(`${API}/competitions/${competitionId}/tracks`, {
+            headers: { Authorization: `Bearer ${token}` },
+        })
+            .then((res) => {
+                if (!res.ok) throw new Error("Could not load tracks");
+                return res.json();
+            })
+            .then((data) => setTracks(Array.isArray(data.tracks) ? data.tracks : []))
+            .catch((err) => {
+                console.error("Tracks fetch error:", err);
+                setTracks([]);
+            })
+            .finally(() => setTracksLoading(false));
+    }, [competitionId, competition?.tracks_enabled]);
+
+    const taskConfig = useMemo(() => competition?.task_config || {}, [competition]);
+    const phases = useMemo(() => taskConfig.phases || [], [taskConfig]);
+    const dataCollectionCfg = useMemo(() => taskConfig.data_collection || {}, [taskConfig]);
+    const licenseCfg = useMemo(() => taskConfig.license || {}, [taskConfig]);
+    const evaluationCfg = useMemo(() => taskConfig.evaluation_scoring || {}, [taskConfig]);
 
     const requiredSkills = useMemo(() => {
         return safeJson(competition?.required_skills, []);
@@ -655,41 +711,72 @@ function CompetitionDetails() {
                                     </button>
                                 </section>
 
-                                <section className="side-card milestones-card">
-                                    <h3>KEY MILESTONES</h3>
+                                {phases.length > 0 ? (
+                                    <section className="side-card milestones-card">
+                                        <h3>PHASES</h3>
 
-                                    <div className="milestone active">
-                                        <span></span>
-                                        <div>
-                                            <b>Submissions Open</b>
-                                            <p>{competition.start_date || "Not set"}</p>
-                                        </div>
-                                    </div>
+                                        {phases
+                                            .slice()
+                                            .sort((a, b) => (a.order || 0) - (b.order || 0))
+                                            .map((phase, idx) => (
+                                                <div
+                                                    className={`milestone${idx === 0 ? " active" : ""}`}
+                                                    key={phase.id || phase.name}
+                                                >
+                                                    <span></span>
+                                                    <div>
+                                                        <b>{phase.name}</b>
+                                                        <p>
+                                                            {phase.durationDays
+                                                                ? `${phase.durationDays} day${phase.durationDays === 1 ? "" : "s"}`
+                                                                : "Duration not set"}
+                                                        </p>
+                                                        {phase.description && <p>{phase.description}</p>}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                    </section>
+                                ) : (competition.validation_date || competition.freeze_date) ? (
+                                    <section className="side-card milestones-card">
+                                        <h3>TIMELINE</h3>
 
-                                    <div className="milestone">
-                                        <span></span>
-                                        <div>
-                                            <b>Model Validation Phase</b>
-                                            <p>{competition.validation_date || "Not set"}</p>
+                                        <div className="milestone active">
+                                            <span></span>
+                                            <div>
+                                                <b>Submissions Open</b>
+                                                <p>{competition.start_date || "Not set"}</p>
+                                            </div>
                                         </div>
-                                    </div>
 
-                                    <div className="milestone">
-                                        <span></span>
-                                        <div>
-                                            <b>Final Leaderboard Freeze</b>
-                                            <p>{competition.freeze_date || "Not set"}</p>
-                                        </div>
-                                    </div>
+                                        {competition.validation_date && (
+                                            <div className="milestone">
+                                                <span></span>
+                                                <div>
+                                                    <b>Model Validation Cutoff</b>
+                                                    <p>{competition.validation_date}</p>
+                                                </div>
+                                            </div>
+                                        )}
 
-                                    <div className="milestone">
-                                        <span></span>
-                                        <div>
-                                            <b>Competition End</b>
-                                            <p>{competition.end_date || "Not set"}</p>
+                                        {competition.freeze_date && (
+                                            <div className="milestone">
+                                                <span></span>
+                                                <div>
+                                                    <b>Final Leaderboard Freeze</b>
+                                                    <p>{competition.freeze_date}</p>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <div className="milestone">
+                                            <span></span>
+                                            <div>
+                                                <b>Competition End</b>
+                                                <p>{competition.end_date || "Not set"}</p>
+                                            </div>
                                         </div>
-                                    </div>
-                                </section>
+                                    </section>
+                                ) : null}
 
                                 <section className="teams-card">
                                     <span>♙</span>
@@ -698,6 +785,33 @@ function CompetitionDetails() {
                                         <p>Max Teams</p>
                                     </div>
                                 </section>
+
+                                {competition.tracks_enabled && (
+                                    <section className="side-card milestones-card">
+                                        <h3>TRACKS</h3>
+
+                                        {tracksLoading && <p className="overview-text">Loading tracks…</p>}
+
+                                        {!tracksLoading && tracks.length === 0 && (
+                                            <p className="overview-text">No tracks configured.</p>
+                                        )}
+
+                                        {tracks.map((t) => (
+                                            <div className="milestone" key={t.id}>
+                                                <span></span>
+                                                <div>
+                                                    <b>
+                                                        {t.name}
+                                                        {t.active === false && " (removed — under minimum)"}
+                                                    </b>
+                                                    <p>
+                                                        {t.team_count} / {t.min_teams} team{t.min_teams === 1 ? "" : "s"} minimum
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </section>
+                                )}
                             </aside>
                         </div>
                     )}
@@ -723,6 +837,59 @@ function CompetitionDetails() {
                                     <p>External data: {competition.allow_external_data ? "Allowed" : "Not allowed"}</p>
                                     <p>Pretrained models: {competition.allow_pretrained_models ? "Allowed" : "Not allowed"}</p>
                                     <p>Code sharing: {competition.require_code_sharing ? "Required" : "Not required"}</p>
+                                </div>
+
+                                {competition.data_collection_enabled && (
+                                    <div className="info-box">
+                                        <h3>DATA COLLECTION</h3>
+                                        {(dataCollectionCfg.inputs || []).length > 0 ? (
+                                            (dataCollectionCfg.inputs || []).map((inp) => (
+                                                <p key={inp.name}>
+                                                    {inp.name}: {inp.modality} · max {inp.max_length}
+                                                    {inp.modality === "audio" ? "s" : " words"}
+                                                </p>
+                                            ))
+                                        ) : (
+                                            <p>No inputs configured.</p>
+                                        )}
+                                        <p>
+                                            Allowed sources:{" "}
+                                            {(dataCollectionCfg.allowed_source_types || []).join(", ") || "Not set"}
+                                        </p>
+                                        <p>Annotators per instance: {dataCollectionCfg.annotators_per_instance || "Not set"}</p>
+                                        <p>
+                                            Disagreement adjudication:{" "}
+                                            {dataCollectionCfg.adjudication_enabled ? "Enabled" : "Disabled"}
+                                        </p>
+                                    </div>
+                                )}
+
+                                {competition.data_collection_enabled && licenseCfg.version && (
+                                    <div className="info-box">
+                                        <h3>DATA USAGE LICENSE</h3>
+                                        <p>Version: {licenseCfg.version}</p>
+                                        <p className="overview-text">{licenseCfg.text}</p>
+                                    </div>
+                                )}
+
+                                <div className="info-box">
+                                    <h3>EVALUATION SCORING</h3>
+                                    <p>
+                                        Mode:{" "}
+                                        {evaluationCfg.mode === "data_quality_plus_model"
+                                            ? "Data quality + model score"
+                                            : "Standard (primary metric only)"}
+                                    </p>
+                                    {evaluationCfg.mode === "data_quality_plus_model" && (
+                                        <>
+                                            <p>Data quality weight: {evaluationCfg.data_quality_weight}%</p>
+                                            <p>Model weight: {evaluationCfg.model_weight}%</p>
+                                            {evaluationCfg.public_test_fraction != null && (
+                                                <p>Held-out test fraction: {evaluationCfg.public_test_fraction}%</p>
+                                            )}
+                                        </>
+                                    )}
+                                    <p>Winners per track: {evaluationCfg.winners_per_track || 1}</p>
                                 </div>
                             </div>
                         </section>
@@ -817,6 +984,47 @@ function CompetitionDetails() {
                             <p className="overview-text">
                                 Participants joined: {monitoring?.participants_count ?? 0}
                             </p>
+
+                            {monitoring?.is_organizer === true && (
+                                <div className="info-box" style={{ marginTop: "20px" }}>
+                                    <h3>JOINED TEAMS</h3>
+
+                                    {joinedTeamsLoading && <p>Loading joined teams…</p>}
+
+                                    {!joinedTeamsLoading && joinedTeams && joinedTeams.teams.length === 0 && (
+                                        <p>No teams or participants have joined yet.</p>
+                                    )}
+
+                                    {!joinedTeamsLoading && joinedTeams && joinedTeams.teams.length > 0 && (
+                                        <table className="details-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Team</th>
+                                                    <th>Members</th>
+                                                    {competition.tracks_enabled && <th>Track</th>}
+                                                    <th>Joined</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {joinedTeams.teams.map((t, idx) => (
+                                                    <tr key={t.team_id || `solo-${idx}`}>
+                                                        <td>{t.team_name || "(solo participant)"}</td>
+                                                        <td>
+                                                            {t.members
+                                                                .map((m) => m.username || m.user_id)
+                                                                .join(", ")}
+                                                        </td>
+                                                        {competition.tracks_enabled && (
+                                                            <td>{t.track_name || "Unassigned"}</td>
+                                                        )}
+                                                        <td>{t.joined_at ? t.joined_at.slice(0, 10) : "—"}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </div>
+                            )}
                         </section>
                     )}
 

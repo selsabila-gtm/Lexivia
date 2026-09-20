@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { supabase } from "../config/supabase.js";
 import CompetitionSidebar from "../components/CompetitionSidebar";
-import "./Experiments.css";
+import "../styles/Experiments.css";
 import CompetitionTopbar from "../components/CompetitionTopbar";
 
 const API = "http://127.0.0.1:8000";

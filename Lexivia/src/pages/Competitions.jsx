@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import Topbar from "../components/Topbar";
-import "./Competitions.css";
+import "../styles/Competitions.css";
 import {
   BarChart3,
   FileText,

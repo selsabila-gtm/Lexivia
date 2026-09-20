@@ -599,3 +599,25 @@
   flex: 1;
   min-width: 0;
 }
+/* Joined-teams roster table (organizer Teams tab) */
+.details-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.details-table th,
+.details-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #ececf3;
+}
+
+.details-table th {
+  color: #70778d;
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
