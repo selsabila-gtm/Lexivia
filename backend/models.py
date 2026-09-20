@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, Column, String, Integer, Boolean, Text, ForeignKey
+from sqlalchemy import JSON, Column, String, Integer, Boolean, Text, ForeignKey, Float, Numeric
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime
@@ -11,15 +11,6 @@ class UserProfile(Base):
     user_id = Column(String, primary_key=True)
     full_name = Column(String)
     email = Column(String, nullable=True)
-
-
-class DashboardStat(Base):
-    __tablename__ = "dashboard_stats"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String, index=True, nullable=False)
-    total_competitions = Column(Integer, default=0)
-    teams_joined = Column(Integer, default=0)
 
 
 class Competition(Base):
@@ -101,19 +92,6 @@ class CompetitionJoinRequest(Base):
     updated_at = Column(String, nullable=True)
 
 
-class RecentCompetition(Base):
-    __tablename__ = "recent_competitions"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    competition_id = Column(String, nullable=True)
-    user_id = Column(String, index=True, nullable=False)
-    title = Column(String, nullable=False)
-    type = Column(String, nullable=False)
-    status = Column(String, nullable=False)
-    score = Column(String, nullable=False)
-    sync = Column(String, nullable=False)
-    icon = Column(String, nullable=False)
-
 class CompetitionPrompt(Base):
     __tablename__ = "competition_prompts"
 
@@ -140,7 +118,7 @@ class DataSample(Base):
     text_content = Column(Text, nullable=True)
 
     audio_url = Column(String, nullable=True)
-    audio_duration = Column(String, nullable=True)
+    audio_duration = Column(Float, nullable=True)  # DB column is `double precision`, not text
 
     flags = Column(JSON, default=list)
     meta_data = Column(JSON, default=dict)
@@ -155,7 +133,7 @@ class DataSample(Base):
 
     annotation = Column(JSON, nullable=True)
 
-    quality_score = Column(String, nullable=True)
+    quality_score = Column(Float, nullable=True)  # DB column is `double precision`, not text
 
 
 
@@ -248,7 +226,7 @@ class Submission(Base):
     file_path = Column(String, nullable=True)
     storage_path = Column(String, nullable=True)
 
-    score = Column(String, nullable=True)
+    score = Column(Numeric, nullable=True)  # DB column is `numeric`, not text — sort/compare safely
     metric_name = Column(String, nullable=True)
     metric_value = Column(String, nullable=True)
 

@@ -13,16 +13,6 @@ class UserLogin(BaseModel):
     password: str
 
 
-class DashboardStatOut(BaseModel):
-    id: str
-    user_id: str
-    total_competitions: int
-    teams_joined: int
-
-    class Config:
-        from_attributes = True
-
-
 class CompetitionOut(BaseModel):
     id: str
     title: str
@@ -54,21 +44,6 @@ class CompetitionOut(BaseModel):
     freeze_date: str | None = None
 
     join_method: str | None = "auto"
-
-    class Config:
-        from_attributes = True
-
-
-class RecentCompetitionOut(BaseModel):
-    id: str
-    competition_id: str | None = None
-    user_id: str
-    title: str
-    type: str
-    status: str
-    score: str
-    sync: str
-    icon: str
 
     class Config:
         from_attributes = True

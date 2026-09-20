@@ -57,8 +57,6 @@ from models import (
     CompetitionParticipant,
     CompetitionJoinRequest,
     CompetitionPrompt,
-    DashboardStat,
-    RecentCompetition,
     CompetitionDataset,
     Submission,
 )
@@ -366,7 +364,7 @@ def validate_evaluation_scoring(evaluation: dict):
 
     dq = evaluation.get("data_quality_weight")
     mw = evaluation.get("model_weight")
-    if dq is None or mw is None or (float(dq) + float(mw)) != 100:
+    if dq is None or mw is None or abs((float(dq) + float(mw)) - 100) > 0.01:
         raise HTTPException(status_code=400, detail="Data quality weight + model weight must add up to 100")
     fraction = evaluation.get("public_test_fraction")
     if fraction is not None and not (0 <= float(fraction) <= 100):
@@ -484,30 +482,6 @@ def apply_competition_filters(query, db, search, category, tab, current_user):
         query = query.filter(Competition.id.in_(ids))
 
     return query
-
-
-def update_dashboard_stat_for_user(db: Session, user_id: str):
-    stats = db.query(DashboardStat).filter(DashboardStat.user_id == user_id).first()
-
-    organized_count = (
-        db.query(CompetitionOrganizer)
-        .join(Competition, CompetitionOrganizer.competition_id == Competition.id)
-        .filter(CompetitionOrganizer.user_id == user_id, Competition.is_draft == False)
-        .count()
-    )
-
-    joined_count = (
-        db.query(CompetitionParticipant)
-        .join(Competition, CompetitionParticipant.competition_id == Competition.id)
-        .filter(CompetitionParticipant.user_id == user_id, Competition.is_draft == False)
-        .count()
-    )
-
-    if stats:
-        stats.total_competitions = organized_count
-        stats.teams_joined = joined_count
-    else:
-        db.add(DashboardStat(user_id=user_id, total_competitions=organized_count, teams_joined=joined_count))
 
 
 def get_user_role(db: Session, competition_id: str, user_id: str):
@@ -670,21 +644,6 @@ def _do_join_competition(db: Session, competition: Competition, user_id: str, te
             joined_at=datetime.utcnow().isoformat(),
         )
     )
-
-    db.add(
-        RecentCompetition(
-            competition_id=competition.id,
-            user_id=user_id,
-            title=competition.title,
-            type=task_category(competition),
-            status="IN PROGRESS",
-            score="--",
-            sync="Just now",
-            icon=get_icon_for_task(competition.task_type),
-        )
-    )
-
-    update_dashboard_stat_for_user(db, user_id)
 
 def _format_user_names(db: Session, user_ids: list[str]) -> str:
     from models import UserProfile
@@ -897,24 +856,9 @@ def create_competition(
         )
     )
 
-    status = compute_competition_status(competition)
-    db.add(
-        RecentCompetition(
-            user_id=current_user.id,
-            competition_id=competition.id,
-            title=competition.title,
-            type=task_category(competition),
-            status=status,
-            score="--",
-            sync="Just now",
-            icon=get_icon_for_task(data.task_type),
-        )
-    )
-
     task_config = getattr(data, "task_config", None) or {}
     _seed_prompts(db, competition.id, data.task_type or "", task_config)
 
-    update_dashboard_stat_for_user(db, current_user.id)
     db.commit()
     db.refresh(competition)
 
@@ -1715,31 +1659,6 @@ def update_competition(
     # Re-seed prompts if applicable
     _seed_prompts(db, competition_id, data.task_type or "", task_config)
 
-    real_status = compute_competition_status(competition)
-
-    recent_rows = db.query(RecentCompetition).filter(RecentCompetition.competition_id == competition_id).all()
-
-    if recent_rows:
-        for row in recent_rows:
-            row.title = competition.title
-            row.type = task_category(competition)
-            row.status = real_status
-            row.icon = get_icon_for_task(competition.task_type)
-    else:
-        db.add(
-            RecentCompetition(
-                user_id=current_user.id,
-                competition_id=competition_id,
-                title=competition.title,
-                type=task_category(competition),
-                status=real_status,
-                score="--",
-                sync="Just now",
-                icon=get_icon_for_task(competition.task_type),
-            )
-        )
-
-    update_dashboard_stat_for_user(db, current_user.id)
     db.commit()
 
     return {"message": "Competition updated successfully"}
@@ -1773,7 +1692,6 @@ def delete_competition(
     db.flush()
 
     db.delete(competition)
-    update_dashboard_stat_for_user(db, current_user.id)
     db.commit()
 
     return {"message": "Competition deleted successfully"}

@@ -82,8 +82,10 @@ async def create_text_sample(
         status=result.status,
         quality_score=float(result.quality_score) if result.quality_score is not None else None,
         flags=result.reasons,                    # jsonb — store as list directly
-        # score_breakdown is text column — store as JSON string
-        score_breakdown=json.dumps(result.score_breakdown) if result.score_breakdown else "[]",
+        # score_breakdown is Column(JSON) — assign the list directly, no json.dumps().
+        # (json.dumps()-ing it here double-encodes it; validation.py's _parse_json_list()
+        # was only added to paper over that. Fix it at the source instead.)
+        score_breakdown=result.score_breakdown or [],
         task_type=task_type,
         submitted_at=datetime.utcnow().isoformat(),
     )
@@ -155,7 +157,7 @@ async def create_audio_sample(
         status=derived_status,
         quality_score=float(result.quality_score) if result.quality_score is not None else None,
         flags=derived_reasons,                   # jsonb — store as list
-        score_breakdown=json.dumps(result.score_breakdown) if result.score_breakdown else "[]",
+        score_breakdown=result.score_breakdown or [],
         task_type="AUDIO_SYNTHESIS",
         submitted_at=datetime.utcnow().isoformat(),
     )
@@ -177,6 +179,9 @@ async def bulk_import(
 ):
     inserted = 0
     rejected = 0
+
+    comp = db.query(Competition).filter(Competition.id == competition_id).first()
+    task_type = (comp.task_type if comp else None) or "TEXT_CLASSIFICATION"
 
     for f in files:
         content = (await f.read()).decode("utf-8")
@@ -221,8 +226,8 @@ async def bulk_import(
                 status=result.status,
                 quality_score=float(result.quality_score) if result.quality_score is not None else None,
                 flags=result.reasons,                    # jsonb — store as list
-                score_breakdown=json.dumps(result.score_breakdown) if result.score_breakdown else "[]",
-                task_type=task_type if "task_type" in dir() else "TEXT_CLASSIFICATION",
+                score_breakdown=result.score_breakdown or [],
+                task_type=task_type,
                 submitted_at=datetime.utcnow().isoformat(),
             ))
 
