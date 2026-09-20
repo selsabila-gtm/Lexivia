@@ -10,19 +10,37 @@ Changes vs previous version:
 
 schemas.py NOTE: add to CompetitionCreateIn:
     task_config: Optional[dict] = None
-    collaborative_sourcing: Optional[bool] = False
+    tracks_enabled: Optional[bool] = False
+    phases_enabled: Optional[bool] = False
+    data_collection_enabled: Optional[bool] = False
 
-Generic support for collaborative, participant-sourced competitions (e.g. AMDC):
-  - task_config["collaborative"] carries {enabled, tracks[], phases[], license{},
-    evaluation{}} and rides inside the existing dataset_config JSON column — no
-    schema migration needed. validate_collaborative_config() enforces the same
-    rules the CreateCompetition wizard enforces client-side (tracks need a
-    minimum team count, phases need a name + duration, a license version/text
-    is mandatory, and combined-mode evaluation weights must sum to 100).
-  - This keeps the platform generic: MULTI_TASK_ANNOTATION lets an organizer
-    define any number of simultaneous label sets (Sentiment/Sarcasm/Hate for
-    AMDC, or a completely different set for another competition) instead of
-    hard-coding one task type per competition.
+Independent platform capabilities, so any competition (whatever its task type)
+can turn on exactly what it needs, without a fixed competition "template":
+  - Tracks: split participants into fair comparison groups, each with a
+    minimum team count. Config: task_config["tracks"], validated by
+    validate_tracks_config() when tracks_enabled=True.
+  - Phases: an ordered, named timeline replacing the flat start/end date +
+    milestones. Config: task_config["phases"], validated by
+    validate_phases_config() when phases_enabled=True.
+  - Data Collection: participants source, record, or adapt their own raw data
+    (instead of an organizer-provided dataset), under format limits, allowed
+    sources, an annotation protocol (annotators per instance + adjudication),
+    and a mandatory data usage license. Config: task_config["data_collection"]
+    and task_config["license"], validated by validate_data_collection_config()
+    when data_collection_enabled=True. This is independent of task type: it
+    applies the same way whether the competition annotates one label or many.
+  - Evaluation scoring mode (task_config["evaluation_scoring"]) is always
+    present; "standard" ranks on the primary metric alone, while
+    "data_quality_plus_model" combines a per-team data-quality score with each
+    team's own model score — validated by validate_evaluation_scoring()
+    whenever that mode is selected, independent of the flags above.
+  - MULTI_TASK_ANNOTATION lets an organizer define any number of simultaneous
+    label sets on the same instance (e.g. Sentiment + Sarcasm + Hate Speech),
+    each with its own annotation type (single-label, multi-label, or
+    span/entity tagging) — so the same builder covers classification-style and
+    NER-style annotation.
+  - All of the above rides inside the existing dataset_config JSON column —
+    no schema migration needed.
 """
 
 import json
@@ -102,18 +120,15 @@ TASK_CONFIG_DEFAULTS: dict[str, dict] = {
         "description": "",
     },
     "MULTI_TASK_ANNOTATION": {
-        "modalities": ["text", "audio"],
+        # Several simultaneous label sets on the same instance, each with its
+        # own annotation type: "single_label", "multi_label", or "span" (entity
+        # tagging, e.g. NER). How the underlying data is sourced/annotated is
+        # controlled by the separate, task-independent Data Collection flag.
         "tasks": [
-            {"id": 1, "name": "Sentiment", "labels": ["Positive", "Negative", "Neutral"]},
-            {"id": 2, "name": "Sarcasm", "labels": ["Yes", "No"]},
-            {"id": 3, "name": "Hate Speech", "labels": ["Hateful", "Not Hateful"]},
+            {"id": 1, "name": "Sentiment", "type": "single_label", "labels": ["Positive", "Negative", "Neutral"]},
+            {"id": 2, "name": "Sarcasm", "type": "single_label", "labels": ["Yes", "No"]},
+            {"id": 3, "name": "Hate Speech", "type": "single_label", "labels": ["Hateful", "Not Hateful"]},
         ],
-        "max_audio_seconds": 10,
-        "max_transcript_words": 20,
-        "allowed_source_types": ["public_platform", "self_recorded"],
-        "require_public_source_provenance": True,
-        "annotators_per_instance": 2,
-        "adjudication_enabled": True,
     },
 }
 
@@ -250,55 +265,97 @@ def validate_competition_payload(data: CompetitionCreateIn):
     if validation_date and freeze_date and freeze_date < validation_date:
         raise HTTPException(status_code=400, detail="Freeze date cannot be before validation date")
 
-    if getattr(data, "collaborative_sourcing", False):
-        validate_collaborative_config(getattr(data, "task_config", None) or {})
+    task_config = getattr(data, "task_config", None) or {}
+
+    if getattr(data, "tracks_enabled", False):
+        validate_tracks_config(task_config.get("tracks") or [])
+
+    if getattr(data, "phases_enabled", False):
+        validate_phases_config(task_config.get("phases") or [])
+
+    if getattr(data, "data_collection_enabled", False):
+        validate_data_collection_config(
+            task_config.get("data_collection") or {},
+            task_config.get("license") or {},
+        )
+
+    # Independent of the flags above: whenever combined evaluation scoring is
+    # selected, its weights must be valid, whether or not tracks are enabled.
+    validate_evaluation_scoring(task_config.get("evaluation_scoring") or {})
 
 
-def validate_collaborative_config(task_config: dict):
+def validate_tracks_config(tracks: list):
     """
-    Server-side mirror of the CreateCompetition wizard's Tracks / Phases /
-    License / Evaluation validation, for competitions where participants
-    source and annotate their own data (the AMDC pattern). Runs whenever
-    collaborative_sourcing=True so a direct API call can't skip the checks
-    the UI enforces.
+    Split participants into fair comparison groups, each viable only once it
+    reaches its own minimum team count. Runs whenever tracks_enabled=True so a
+    direct API call can't skip the checks the CreateCompetition wizard enforces.
     """
-    collab = (task_config or {}).get("collaborative") or {}
-
-    tracks = collab.get("tracks") or []
     if not tracks:
-        raise HTTPException(status_code=400, detail="At least one track is required for a collaborative-sourcing competition")
+        raise HTTPException(status_code=400, detail="At least one track is required when Tracks is enabled")
     for t in tracks:
         if not (t.get("name") or "").strip():
             raise HTTPException(status_code=400, detail="Every track needs a name")
         if not t.get("minTeams") or int(t["minTeams"]) < 1:
             raise HTTPException(status_code=400, detail=f"Track '{t.get('name')}' needs a minimum team count of at least 1")
 
-    phases = collab.get("phases") or []
+
+def validate_phases_config(phases: list):
+    """
+    An ordered, named timeline replacing the flat start/end date + milestones.
+    Runs whenever phases_enabled=True.
+    """
     if not phases:
-        raise HTTPException(status_code=400, detail="At least one phase is required for a collaborative-sourcing competition")
+        raise HTTPException(status_code=400, detail="At least one phase is required when Phases is enabled")
     for p in phases:
         if not (p.get("name") or "").strip():
             raise HTTPException(status_code=400, detail="Every phase needs a name")
         if not p.get("durationDays") or int(p["durationDays"]) <= 0:
             raise HTTPException(status_code=400, detail=f"Phase '{p.get('name')}' needs a duration greater than 0 days")
 
-    license_cfg = collab.get("license") or {}
+
+def validate_data_collection_config(data_collection: dict, license_cfg: dict):
+    """
+    Participants source, record, or adapt their own raw data instead of using
+    an organizer-provided dataset. Runs whenever data_collection_enabled=True,
+    independent of task type or which/how many labels are being annotated.
+    """
+    modalities = data_collection.get("modalities") or []
+    if not modalities:
+        raise HTTPException(status_code=400, detail="Select at least one modality (text and/or audio) for Data Collection")
+    if "audio" in modalities and not data_collection.get("max_audio_seconds"):
+        raise HTTPException(status_code=400, detail="Set a positive maximum audio length")
+    if "text" in modalities and not data_collection.get("max_transcript_words"):
+        raise HTTPException(status_code=400, detail="Set a positive maximum text/transcript length")
+    if not data_collection.get("allowed_source_types"):
+        raise HTTPException(status_code=400, detail="Select at least one allowed data source")
+    if not data_collection.get("annotators_per_instance") or int(data_collection["annotators_per_instance"]) < 1:
+        raise HTTPException(status_code=400, detail="At least one annotator per instance is required")
+
     if not (license_cfg.get("version") or "").strip():
         raise HTTPException(status_code=400, detail="A license version is required before contributors can accept it")
     if not (license_cfg.get("text") or "").strip():
-        raise HTTPException(status_code=400, detail="License text is required for a collaborative-sourcing competition")
+        raise HTTPException(status_code=400, detail="License text is required when Data Collection is enabled")
 
-    evaluation = collab.get("evaluation") or {}
-    if evaluation.get("mode") == "data_quality_plus_model":
-        dq = evaluation.get("data_quality_weight")
-        mw = evaluation.get("model_weight")
-        if dq is None or mw is None or (float(dq) + float(mw)) != 100:
-            raise HTTPException(status_code=400, detail="Data quality weight + model weight must add up to 100")
-        fraction = evaluation.get("public_test_fraction")
-        if fraction is not None and not (0 <= float(fraction) <= 100):
-            raise HTTPException(status_code=400, detail="Held-out test fraction must be between 0 and 100")
-        if not evaluation.get("winners_per_track") or int(evaluation["winners_per_track"]) < 1:
-            raise HTTPException(status_code=400, detail="At least 1 winner per track is required")
+
+def validate_evaluation_scoring(evaluation: dict):
+    """
+    "standard" ranks on the primary metric alone and needs no extra checks;
+    "data_quality_plus_model" combines a per-team data-quality score with each
+    team's own model score, so its weights must be valid regardless of which
+    other capabilities (tracks, phases, data collection) are turned on.
+    """
+    if evaluation.get("mode") != "data_quality_plus_model":
+        return
+
+    dq = evaluation.get("data_quality_weight")
+    mw = evaluation.get("model_weight")
+    if dq is None or mw is None or (float(dq) + float(mw)) != 100:
+        raise HTTPException(status_code=400, detail="Data quality weight + model weight must add up to 100")
+    fraction = evaluation.get("public_test_fraction")
+    if fraction is not None and not (0 <= float(fraction) <= 100):
+        raise HTTPException(status_code=400, detail="Held-out test fraction must be between 0 and 100")
+    if not evaluation.get("winners_per_track") or int(evaluation["winners_per_track"]) < 1:
+        raise HTTPException(status_code=400, detail="At least 1 winner is required")
 
 
 def _clean_list_values(cfg: dict) -> dict:

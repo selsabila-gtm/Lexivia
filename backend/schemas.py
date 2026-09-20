@@ -103,12 +103,14 @@ class CompetitionCreateIn(BaseModel):
     task_config: Optional[dict] = None
     join_method: str = "auto"  # "auto" | "manual"
 
-    # True for competitions where teams source, transcribe, and annotate their
-    # own data (the AMDC pattern): tracks, phases, license, and the combined
-    # data-quality + model-score evaluation config all live inside
-    # task_config["collaborative"] — validated server-side in
-    # validate_collaborative_config() when this flag is set.
-    collaborative_sourcing: Optional[bool] = False
+    # Independent platform capabilities — a competition can turn on any
+    # combination. Their configuration (tracks list, phases list, data
+    # collection rules + license, evaluation weighting) lives inside
+    # task_config, validated server-side in competitions.py when the
+    # matching flag is set.
+    tracks_enabled: Optional[bool] = False
+    phases_enabled: Optional[bool] = False
+    data_collection_enabled: Optional[bool] = False
 
 
 class CompetitionActionOut(BaseModel):
