@@ -56,7 +56,13 @@ const taskTypes = [
     { value: "SPEECH_EMOTION", label: "Speech Emotion" },
     { value: "AUDIO_EVENT_DETECTION", label: "Audio Event Detection" },
     { value: "MULTI_TASK_ANNOTATION", label: "Multi-Task / Multimodal Annotation" },
+    { value: "CUSTOM", label: "Custom / Personalized Competition" },
 ];
+
+// Task types whose Data Collection builder is fully organizer-defined —
+// any number of inputs, any names, any modalities, any annotation tasks —
+// rather than a fixed shape derived from the task type.
+const FLEXIBLE_TASK_TYPES = ["MULTI_TASK_ANNOTATION", "CUSTOM"];
 
 // Source types a team can pull participant-sourced data from (generic, not audio-specific)
 const SOURCE_TYPE_OPTIONS = [
@@ -69,6 +75,38 @@ const MODALITY_OPTIONS = [
     { value: "text", label: "Text" },
     { value: "audio", label: "Audio" },
 ];
+
+// An instance can carry more than one input, and two inputs can share the
+// same modality — e.g. Question Answering needs a "Question" and a
+// "Context Passage", both text, each with its own length limit. Most preset
+// task types have a fixed, well-known input shape; only MULTI_TASK_ANNOTATION
+// and CUSTOM leave the input list fully open to the organizer.
+function getDefaultInputsForTaskType(taskType) {
+    switch (taskType) {
+        case "QUESTION_ANSWERING":
+            return [
+                { id: 1, name: "Question", modality: "text", maxLength: 30, locked: true },
+                { id: 2, name: "Context Passage", modality: "text", maxLength: 300, locked: true },
+            ];
+        case "TRANSLATION":
+            return [{ id: 1, name: "Source Text", modality: "text", maxLength: 100, locked: true }];
+        case "TEXT_CLASSIFICATION":
+        case "NER":
+        case "SENTIMENT_ANALYSIS":
+        case "SUMMARIZATION":
+            return [{ id: 1, name: "Text", modality: "text", maxLength: 200, locked: true }];
+        case "AUDIO_SYNTHESIS":
+        case "AUDIO_TRANSCRIPTION":
+        case "SPEECH_EMOTION":
+        case "AUDIO_EVENT_DETECTION":
+            return [{ id: 1, name: "Audio", modality: "audio", maxLength: 10, locked: true }];
+        case "MULTI_TASK_ANNOTATION":
+        case "CUSTOM":
+            return [{ id: Date.now(), name: "Text", modality: "text", maxLength: 50, locked: false }];
+        default:
+            return [{ id: 1, name: "Text", modality: "text", maxLength: 200, locked: true }];
+    }
+}
 
 // How a single annotation task's labels get applied to an instance.
 const ANNOTATION_TYPE_OPTIONS = [
@@ -170,6 +208,16 @@ function getDefaultTaskConfig(taskType) {
                     { id: 3, name: "Hate Speech", type: "single_label", labels: ["Hateful", "Not Hateful"] },
                 ],
             };
+        case "CUSTOM":
+            // A blank slate: the organizer defines every input (Data Collection
+            // step) and every annotation task from scratch, plus free-form notes
+            // for anything the structured fields don't cover.
+            return {
+                tasks: [
+                    { id: 1, name: "", type: "single_label", labels: ["Label A", "Label B"] },
+                ],
+                custom_notes: "",
+            };
         default:
             return {};
     }
@@ -224,14 +272,13 @@ const initialForm = {
     ],
 
     // Data Collection: participants source, record, or adapt their own raw
-    // data instead of using an organizer-provided dataset. Governs format
-    // limits, allowed sources, and the annotation protocol — independent of
-    // which task type or label set is being annotated.
+    // data instead of using an organizer-provided dataset. Governs the shape
+    // of a contributed instance (one or more named inputs, each text or
+    // audio, with its own length limit), allowed sources, and the annotation
+    // protocol — independent of which task type or label set is annotated.
     participantSourcedData: false,
     dataCollection: {
-        modalities: ["text"],
-        maxAudioSeconds: 10,
-        maxTranscriptWords: 20,
+        inputs: getDefaultInputsForTaskType(""),
         allowedSourceTypes: ["public_platform", "self_recorded"],
         requireProvenance: true,
         annotatorsPerInstance: 2,
@@ -347,9 +394,15 @@ function mapCompetitionToForm(c) {
 
         participantSourcedData: !!taskConfig.data_collection_enabled,
         dataCollection: {
-            modalities: dataCollectionCfg.modalities || initialForm.dataCollection.modalities,
-            maxAudioSeconds: dataCollectionCfg.max_audio_seconds ?? initialForm.dataCollection.maxAudioSeconds,
-            maxTranscriptWords: dataCollectionCfg.max_transcript_words ?? initialForm.dataCollection.maxTranscriptWords,
+            inputs: Array.isArray(dataCollectionCfg.inputs) && dataCollectionCfg.inputs.length
+                ? dataCollectionCfg.inputs.map((inp) => ({
+                    id: inp.id ?? Date.now() + Math.random(),
+                    name: inp.name || "",
+                    modality: inp.modality || "text",
+                    maxLength: inp.max_length ?? (inp.modality === "audio" ? 10 : 50),
+                    locked: !FLEXIBLE_TASK_TYPES.includes(c.task_type || ""),
+                }))
+                : getDefaultInputsForTaskType(c.task_type || ""),
             allowedSourceTypes: dataCollectionCfg.allowed_source_types || initialForm.dataCollection.allowedSourceTypes,
             requireProvenance: dataCollectionCfg.require_public_source_provenance ?? true,
             annotatorsPerInstance: dataCollectionCfg.annotators_per_instance ?? 2,
@@ -538,8 +591,16 @@ function CreateCompetition({ editMode = false }) {
         setForm((prev) => {
             const next = { ...prev, [field]: value };
             // When task type changes, reset taskConfig to the new task's defaults
+            // and re-derive the Data Collection input shape. Moving between the
+            // two flexible types (MULTI_TASK_ANNOTATION <-> CUSTOM) keeps
+            // whatever inputs the organizer already defined.
             if (field === "taskType") {
                 next.taskConfig = getDefaultTaskConfig(value);
+                const stayingFlexible = FLEXIBLE_TASK_TYPES.includes(prev.taskType) && FLEXIBLE_TASK_TYPES.includes(value);
+                next.dataCollection = {
+                    ...prev.dataCollection,
+                    inputs: stayingFlexible ? prev.dataCollection.inputs : getDefaultInputsForTaskType(value),
+                };
             }
             return next;
         });
@@ -579,12 +640,29 @@ function CreateCompetition({ editMode = false }) {
         }));
     };
 
-    const toggleModality = (value) => {
-        const modalities = form.dataCollection.modalities || [];
-        updateDataCollection(
-            "modalities",
-            modalities.includes(value) ? modalities.filter((m) => m !== value) : [...modalities, value]
-        );
+    const addInput = () => {
+        const inputs = Array.isArray(form.dataCollection.inputs) ? form.dataCollection.inputs : [];
+        updateDataCollection("inputs", [
+            ...inputs,
+            { id: Date.now(), name: "", modality: "text", maxLength: 50, locked: false },
+        ]);
+    };
+
+    const updateInput = (id, field, value) => {
+        const inputs = Array.isArray(form.dataCollection.inputs) ? form.dataCollection.inputs : [];
+        updateDataCollection("inputs", inputs.map((inp) => {
+            if (inp.id !== id) return inp;
+            const next = { ...inp, [field]: value };
+            // Switching an input's modality resets its length limit to a
+            // sensible default for the new kind (words vs. seconds).
+            if (field === "modality") next.maxLength = value === "audio" ? 10 : 50;
+            return next;
+        }));
+    };
+
+    const removeInput = (id) => {
+        const inputs = Array.isArray(form.dataCollection.inputs) ? form.dataCollection.inputs : [];
+        updateDataCollection("inputs", inputs.filter((inp) => inp.id !== id));
     };
 
     const toggleSourceType = (value) => {
@@ -737,7 +815,7 @@ function CreateCompetition({ editMode = false }) {
                     nextErrors.prompts = "At least one prompt sentence is required for this task type.";
             }
 
-            if (form.taskType === "MULTI_TASK_ANNOTATION") {
+            if (FLEXIBLE_TASK_TYPES.includes(form.taskType)) {
                 const tasks = Array.isArray(form.taskConfig.tasks) ? form.taskConfig.tasks : [];
                 if (!tasks.length)
                     nextErrors.tasks = "Define at least one annotation task.";
@@ -758,14 +836,17 @@ function CreateCompetition({ editMode = false }) {
         // contributors source their own raw data.
         if (key === "dataCollection") {
             const dc = form.dataCollection;
-            if (!Array.isArray(dc.modalities) || !dc.modalities.length)
-                nextErrors.modalities = "Select at least one modality (text and/or audio).";
-            if (dc.modalities?.includes("audio") &&
-                (!dc.maxAudioSeconds || Number(dc.maxAudioSeconds) <= 0))
-                nextErrors.maxAudioSeconds = "Set a positive maximum audio length.";
-            if (dc.modalities?.includes("text") &&
-                (!dc.maxTranscriptWords || Number(dc.maxTranscriptWords) <= 0))
-                nextErrors.maxTranscriptWords = "Set a positive maximum word count.";
+            const inputs = Array.isArray(dc.inputs) ? dc.inputs : [];
+            if (!inputs.length)
+                nextErrors.inputs = "Define at least one input.";
+            inputs.forEach((inp) => {
+                if (!inp.name || !inp.name.trim())
+                    nextErrors[`inputName-${inp.id}`] = "Every input needs a name.";
+                if (!inp.maxLength || Number(inp.maxLength) <= 0)
+                    nextErrors[`inputLength-${inp.id}`] = inp.modality === "audio"
+                        ? "Set a positive maximum length in seconds."
+                        : "Set a positive maximum length in words.";
+            });
             if (!Array.isArray(dc.allowedSourceTypes) || !dc.allowedSourceTypes.length)
                 nextErrors.allowedSourceTypes = "Select at least one allowed data source.";
             if (!dc.annotatorsPerInstance || Number(dc.annotatorsPerInstance) < 1)
@@ -887,9 +968,11 @@ function CreateCompetition({ editMode = false }) {
         if (form.participantSourcedData) {
             taskConfig.data_collection_enabled = true;
             taskConfig.data_collection = {
-                modalities: form.dataCollection.modalities,
-                max_audio_seconds: form.dataCollection.modalities.includes("audio") ? Number(form.dataCollection.maxAudioSeconds) : null,
-                max_transcript_words: form.dataCollection.modalities.includes("text") ? Number(form.dataCollection.maxTranscriptWords) : null,
+                inputs: form.dataCollection.inputs.map((inp) => ({
+                    name: inp.name.trim(),
+                    modality: inp.modality,
+                    max_length: Number(inp.maxLength) || null,
+                })),
                 allowed_source_types: form.dataCollection.allowedSourceTypes,
                 require_public_source_provenance: !!form.dataCollection.requireProvenance,
                 annotators_per_instance: Number(form.dataCollection.annotatorsPerInstance) || 1,
@@ -1573,8 +1656,8 @@ function CreateCompetition({ editMode = false }) {
                     </>
                 )}
 
-                {/* ── MULTI_TASK_ANNOTATION: define the label sets ────────── */}
-                {taskType === "MULTI_TASK_ANNOTATION" && (
+                {/* ── MULTI_TASK_ANNOTATION / CUSTOM: define the label sets ── */}
+                {FLEXIBLE_TASK_TYPES.includes(taskType) && (
                     <>
                         <div className="section-header-row">
                             <div>
@@ -1654,6 +1737,19 @@ function CreateCompetition({ editMode = false }) {
                                 </div>
                             </div>
                         ))}
+
+                        {taskType === "CUSTOM" && (
+                            <div className="create-section">
+                                <label>Custom Configuration Notes</label>
+                                <textarea
+                                    rows={4}
+                                    placeholder="Anything specific to this competition that doesn't fit the structured fields above — special rules, a scoring nuance, how inputs relate to each other, etc."
+                                    value={cfg.custom_notes || ""}
+                                    onChange={(e) => updateTaskConfig("custom_notes", e.target.value)}
+                                />
+                                <small>Optional. Shown to organizers only, not published to participants.</small>
+                            </div>
+                        )}
                     </>
                 )}
             </div>
@@ -1667,6 +1763,7 @@ function CreateCompetition({ editMode = false }) {
     // competition annotates one label or several (Task Config, above).
     const renderDataCollection = () => {
         const dc = form.dataCollection;
+        const isFlexible = FLEXIBLE_TASK_TYPES.includes(form.taskType);
 
         return (
             <div className="create-card">
@@ -1677,49 +1774,72 @@ function CreateCompetition({ editMode = false }) {
                     resulting dataset, legally sound.
                 </p>
 
-                <div className="create-section">
-                    <label>Modalities <span className="required-star">*</span></label>
-                    <small>What kind of input does each contributed instance carry?</small>
-                    <div className="tc-radio-group">
-                        {MODALITY_OPTIONS.map((opt) => {
-                            const selected = (dc.modalities || []).includes(opt.value);
-                            return (
-                                <label key={opt.value} className={`tc-radio-option ${selected ? "selected" : ""}`}>
-                                    <input type="checkbox" checked={selected} onChange={() => toggleModality(opt.value)} />
-                                    <div><strong>{opt.label}</strong></div>
-                                </label>
-                            );
-                        })}
+                <div className="section-header-row">
+                    <div>
+                        <h4 style={{ margin: 0 }}>Instance Inputs</h4>
+                        <p className="create-card-subtitle" style={{ margin: 0 }}>
+                            {isFlexible
+                                ? "Define every input a contributed instance carries. You can add more than one input of the same type — e.g. two text fields, or a text field plus an audio clip."
+                                : 'Fixed by the task type you picked in Task Config. Choose "Custom / Personalized Competition" or "Multi-Task / Multimodal Annotation" if you need to define these yourself.'}
+                        </p>
                     </div>
-                    <ErrorMessage name="modalities" />
+                    {isFlexible && (
+                        <button type="button" className="soft-action-btn" onClick={addInput}>
+                            + Add Input
+                        </button>
+                    )}
                 </div>
+                <ErrorMessage name="inputs" />
 
-                <div className="create-two-col">
-                    {(dc.modalities || []).includes("audio") && (
-                        <div className="create-section">
-                            <label>Max Audio Length (seconds) <span className="required-star">*</span></label>
-                            <input
-                                className={errors.maxAudioSeconds ? "input-error" : ""}
-                                type="number" min="1"
-                                value={dc.maxAudioSeconds ?? 10}
-                                onChange={(e) => updateDataCollection("maxAudioSeconds", parseFloat(e.target.value) || 0)}
-                            />
-                            <ErrorMessage name="maxAudioSeconds" />
+                {(dc.inputs || []).map((inp, idx) => (
+                    <div key={inp.id} className="inner-panel">
+                        <div className="create-two-col">
+                            <div className="create-section">
+                                <label>Input {idx + 1} Name <span className="required-star">*</span></label>
+                                <input
+                                    className={errors[`inputName-${inp.id}`] ? "input-error" : ""}
+                                    type="text"
+                                    placeholder="e.g., Question, Context Passage, Audio Clip"
+                                    value={inp.name}
+                                    disabled={inp.locked}
+                                    onChange={(e) => updateInput(inp.id, "name", e.target.value)}
+                                />
+                                <ErrorMessage name={`inputName-${inp.id}`} />
+                            </div>
+                            <div className="create-section">
+                                <label>Type <span className="required-star">*</span></label>
+                                {inp.locked ? (
+                                    <input type="text" value={MODALITY_OPTIONS.find((o) => o.value === inp.modality)?.label || inp.modality} disabled />
+                                ) : (
+                                    <select value={inp.modality} onChange={(e) => updateInput(inp.id, "modality", e.target.value)}>
+                                        {MODALITY_OPTIONS.map((opt) => (
+                                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                        ))}
+                                    </select>
+                                )}
+                            </div>
                         </div>
-                    )}
-                    {(dc.modalities || []).includes("text") && (
-                        <div className="create-section">
-                            <label>Max Text/Transcript Length (words) <span className="required-star">*</span></label>
-                            <input
-                                className={errors.maxTranscriptWords ? "input-error" : ""}
-                                type="number" min="1"
-                                value={dc.maxTranscriptWords ?? 20}
-                                onChange={(e) => updateDataCollection("maxTranscriptWords", parseInt(e.target.value, 10) || 0)}
-                            />
-                            <ErrorMessage name="maxTranscriptWords" />
+                        <div className="create-two-col">
+                            <div className="create-section">
+                                <label>Max Length ({inp.modality === "audio" ? "seconds" : "words"}) <span className="required-star">*</span></label>
+                                <input
+                                    className={errors[`inputLength-${inp.id}`] ? "input-error" : ""}
+                                    type="number" min="1"
+                                    value={inp.maxLength}
+                                    onChange={(e) => updateInput(inp.id, "maxLength", parseFloat(e.target.value) || 0)}
+                                />
+                                <ErrorMessage name={`inputLength-${inp.id}`} />
+                            </div>
+                            {isFlexible && (dc.inputs || []).length > 1 && (
+                                <div className="create-section" style={{ justifyContent: "flex-end" }}>
+                                    <button type="button" className="remove-btn" onClick={() => removeInput(inp.id)}>
+                                        Remove Input
+                                    </button>
+                                </div>
+                            )}
                         </div>
-                    )}
-                </div>
+                    </div>
+                ))}
 
                 <div className="create-section">
                     <label>Allowed Data Sources <span className="required-star">*</span></label>

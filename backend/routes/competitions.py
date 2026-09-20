@@ -123,12 +123,21 @@ TASK_CONFIG_DEFAULTS: dict[str, dict] = {
         # Several simultaneous label sets on the same instance, each with its
         # own annotation type: "single_label", "multi_label", or "span" (entity
         # tagging, e.g. NER). How the underlying data is sourced/annotated is
-        # controlled by the separate, task-independent Data Collection flag.
+        # controlled by the separate, task-independent Data Collection flag,
+        # whose "inputs" list supports more than one named input of the same
+        # or different modality (e.g. Question + Context, both text).
         "tasks": [
             {"id": 1, "name": "Sentiment", "type": "single_label", "labels": ["Positive", "Negative", "Neutral"]},
             {"id": 2, "name": "Sarcasm", "type": "single_label", "labels": ["Yes", "No"]},
             {"id": 3, "name": "Hate Speech", "type": "single_label", "labels": ["Hateful", "Not Hateful"]},
         ],
+    },
+    "CUSTOM": {
+        # A blank slate: the organizer defines every input (via Data
+        # Collection) and every annotation task from scratch, plus free-form
+        # notes for anything the structured fields don't cover.
+        "tasks": [],
+        "custom_notes": "",
     },
 }
 
@@ -318,14 +327,22 @@ def validate_data_collection_config(data_collection: dict, license_cfg: dict):
     Participants source, record, or adapt their own raw data instead of using
     an organizer-provided dataset. Runs whenever data_collection_enabled=True,
     independent of task type or which/how many labels are being annotated.
+
+    An instance can carry more than one input (e.g. Question Answering needs
+    a "Question" and a "Context Passage", both text), so this validates a
+    list of named inputs rather than a single modality.
     """
-    modalities = data_collection.get("modalities") or []
-    if not modalities:
-        raise HTTPException(status_code=400, detail="Select at least one modality (text and/or audio) for Data Collection")
-    if "audio" in modalities and not data_collection.get("max_audio_seconds"):
-        raise HTTPException(status_code=400, detail="Set a positive maximum audio length")
-    if "text" in modalities and not data_collection.get("max_transcript_words"):
-        raise HTTPException(status_code=400, detail="Set a positive maximum text/transcript length")
+    inputs = data_collection.get("inputs") or []
+    if not inputs:
+        raise HTTPException(status_code=400, detail="Define at least one input for Data Collection")
+    for inp in inputs:
+        if not (inp.get("name") or "").strip():
+            raise HTTPException(status_code=400, detail="Every input needs a name")
+        if inp.get("modality") not in ("text", "audio"):
+            raise HTTPException(status_code=400, detail=f"Input '{inp.get('name')}' needs a modality of 'text' or 'audio'")
+        if not inp.get("max_length") or float(inp["max_length"]) <= 0:
+            raise HTTPException(status_code=400, detail=f"Input '{inp.get('name')}' needs a positive maximum length")
+
     if not data_collection.get("allowed_source_types"):
         raise HTTPException(status_code=400, detail="Select at least one allowed data source")
     if not data_collection.get("annotators_per_instance") or int(data_collection["annotators_per_instance"]) < 1:
