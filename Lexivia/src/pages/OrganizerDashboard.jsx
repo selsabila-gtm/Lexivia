@@ -186,7 +186,65 @@ function OrganizerDashboard() {
     const [joinRequests, setJoinRequests] = useState([]);
     const [requestsLoading, setRequestsLoading] = useState(false);
 
+    const [teamsData, setTeamsData] = useState(null);
+    const [teamsLoading, setTeamsLoading] = useState(false);
+
+    const [submissions, setSubmissions] = useState([]);
+    const [submissionsLoading, setSubmissionsLoading] = useState(false);
+
     const token = getToken();
+
+    const fetchTeams = useCallback(async () => {
+        if (!token) return;
+
+        setTeamsLoading(true);
+
+        try {
+            const res = await fetch(`${API}/competitions/${competitionId}/teams`, {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
+            });
+
+            if (!res.ok) {
+                throw new Error("Could not load teams");
+            }
+
+            const data = await res.json();
+            setTeamsData(data);
+        } catch (error) {
+            console.error(error);
+            setTeamsData(null);
+        } finally {
+            setTeamsLoading(false);
+        }
+    }, [competitionId, token]);
+
+    const fetchSubmissions = useCallback(async () => {
+        if (!token) return;
+
+        setSubmissionsLoading(true);
+
+        try {
+            const res = await fetch(`${API}/competitions/${competitionId}/submissions`, {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
+            });
+
+            if (!res.ok) {
+                throw new Error("Could not load submissions");
+            }
+
+            const data = await res.json();
+            setSubmissions(Array.isArray(data) ? data : []);
+        } catch (error) {
+            console.error(error);
+            setSubmissions([]);
+        } finally {
+            setSubmissionsLoading(false);
+        }
+    }, [competitionId, token]);
 
     const fetchDatasets = useCallback(async () => {
         if (!token) return;
@@ -325,6 +383,8 @@ function OrganizerDashboard() {
 
                 fetchDatasets();
                 fetchJoinRequests();
+                fetchTeams();
+                fetchSubmissions();
             } catch (error) {
                 console.error(error);
                 alert("Could not load organizer dashboard.");
@@ -335,7 +395,7 @@ function OrganizerDashboard() {
         }
 
         loadDashboard();
-    }, [competitionId, navigate, token, fetchDatasets, fetchJoinRequests]);
+    }, [competitionId, navigate, token, fetchDatasets, fetchJoinRequests, fetchTeams, fetchSubmissions]);
 
     useEffect(() => {
         if (!token) return;
@@ -501,11 +561,78 @@ function OrganizerDashboard() {
 
                 <section className="panel">
                     <div className="section-row">
+                        <h2>Teams</h2>
+                        <span>
+                            {teamsData
+                                ? `${teamsData.total_teams} team${teamsData.total_teams !== 1 ? "s" : ""} · ${teamsData.total_solo_participants} solo`
+                                : "—"}
+                        </span>
+                    </div>
+
+                    {teamsLoading ? (
+                        <div className="empty-state">
+                            <strong>Loading teams...</strong>
+                            <p>Fetching who's joined this competition.</p>
+                        </div>
+                    ) : !teamsData || teamsData.teams.length === 0 ? (
+                        <div className="empty-state">
+                            <strong>No teams or participants yet</strong>
+                            <p>Joined teams and solo participants will show up here.</p>
+                        </div>
+                    ) : (
+                        <table className="submission-table">
+                            <thead>
+                                <tr>
+                                    <th>Team</th>
+                                    <th>Members</th>
+                                    {competition.tracks_enabled && <th>Track</th>}
+                                    <th>Joined</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {teamsData.teams.map((t, idx) => (
+                                    <tr key={t.team_id || `solo-${idx}`}>
+                                        <td style={{ fontWeight: 600 }}>
+                                            {t.team_name || "(solo participant)"}
+                                        </td>
+                                        <td>
+                                            {t.members.map((m) => m.username || m.user_id).join(", ")}
+                                        </td>
+                                        {competition.tracks_enabled && (
+                                            <td>{t.track_name || "Unassigned"}</td>
+                                        )}
+                                        <td>{fmtDate(t.joined_at)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
+                </section>
+
+                <section className="panel">
+                    <div className="section-row">
                         <h2>Data Collection</h2>
                         <span>{monitoring.data_collection_status}</span>
                     </div>
 
-                    {datasetsLoading ? (
+                    {monitoring.data_collection_enabled ? (
+                        // Participant-sourced data competitions don't use organizer-uploaded
+                        // datasets — participants contribute the raw data instead, so this
+                        // panel reports collected samples rather than an (intentionally empty)
+                        // dataset list.
+                        <div className="empty-state">
+                            <strong>
+                                {monitoring.samples_count > 0
+                                    ? `${monitoring.samples_count} sample${monitoring.samples_count !== 1 ? "s" : ""} collected`
+                                    : "No samples collected yet"}
+                            </strong>
+                            <p>
+                                Data Collection is enabled for this competition — participants
+                                contribute the raw data themselves, which is used directly for
+                                training and evaluation. No dataset upload is needed here.
+                            </p>
+                        </div>
+                    ) : datasetsLoading ? (
                         <div className="empty-state">
                             <strong>Loading datasets...</strong>
                             <p>Fetching files attached to this competition.</p>
@@ -531,7 +658,7 @@ function OrganizerDashboard() {
                 <section className="panel">
                     <div className="section-row">
                         <h2>Recent Submissions</h2>
-                        <button type="button">Export All</button>
+                        <span>{submissions.length} shown</span>
                     </div>
 
                     <table className="submission-table">
@@ -541,16 +668,58 @@ function OrganizerDashboard() {
                                 <th>Score</th>
                                 <th>Time</th>
                                 <th>Status</th>
-                                <th>Actions</th>
                             </tr>
                         </thead>
 
                         <tbody>
-                            <tr>
-                                <td colSpan="5" className="table-empty">
-                                    No submissions yet.
-                                </td>
-                            </tr>
+                            {submissionsLoading ? (
+                                <tr>
+                                    <td colSpan="4" className="table-empty">
+                                        Loading submissions...
+                                    </td>
+                                </tr>
+                            ) : submissions.length === 0 ? (
+                                <tr>
+                                    <td colSpan="4" className="table-empty">
+                                        No submissions yet.
+                                    </td>
+                                </tr>
+                            ) : (
+                                submissions.map((s) => (
+                                    <tr key={s.id}>
+                                        <td style={{ fontWeight: 600 }}>
+                                            {s.team_name}
+                                            {!s.is_team && (
+                                                <span style={{ marginLeft: 6, color: "#9ca3af", fontWeight: 400, fontSize: 11 }}>
+                                                    (solo)
+                                                </span>
+                                            )}
+                                        </td>
+                                        <td>{fmtScore(s.score)}</td>
+                                        <td>{fmtDate(s.submitted_at)}</td>
+                                        <td>
+                                            <span
+                                                style={{
+                                                    fontSize: 11,
+                                                    fontWeight: 700,
+                                                    padding: "2px 8px",
+                                                    borderRadius: 20,
+                                                    letterSpacing: "0.03em",
+                                                    background:
+                                                        s.status === "done" ? "#e6f9ef" :
+                                                        s.status === "failed" ? "#fdeaea" : "#fff7ed",
+                                                    color:
+                                                        s.status === "done" ? "#1a7a44" :
+                                                        s.status === "failed" ? "#c0392b" : "#b85200",
+                                                }}
+                                                title={s.error_message || ""}
+                                            >
+                                                {s.status || "pending"}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
                         </tbody>
                     </table>
                 </section>

@@ -59,6 +59,7 @@ from models import (
     CompetitionPrompt,
     CompetitionDataset,
     Submission,
+    DataSample,
 )
 from schemas import CompetitionCreateIn, CompetitionActionOut
 from .utils import get_db, get_current_user, get_icon_for_task
@@ -798,8 +799,10 @@ def get_competitions_count(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    query = db.query(Competition).filter(Competition.is_draft == False)
+    query = db.query(Competition)
     query = apply_competition_filters(query, db, search, category, tab, current_user)
+    if tab != "organizing":
+        query = query.filter(Competition.is_draft == False)
 
     competitions = query.all()
 
@@ -893,8 +896,13 @@ def get_competitions(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    query = db.query(Competition).filter(Competition.is_draft == False)
+    query = db.query(Competition)
     query = apply_competition_filters(query, db, search, category, tab, current_user)
+    # Drafts should only ever be visible to their own organizer, and only in
+    # the "My Organizing" view — apply_competition_filters() has already
+    # scoped "organizing" down to competitions this user actually organizes.
+    if tab != "organizing":
+        query = query.filter(Competition.is_draft == False)
 
     competitions = query.all()
 
@@ -1586,6 +1594,60 @@ def list_joined_teams(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Submissions (organizer-only — recent submissions list)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/competitions/{competition_id}/submissions")
+def list_recent_submissions(
+    competition_id: str,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    from models import UserProfile
+    from models_teams import Team
+
+    competition = db.query(Competition).filter(Competition.id == competition_id).first()
+    if not competition:
+        raise HTTPException(status_code=404, detail="Competition not found")
+
+    if get_user_role(db, competition_id, current_user.id) != "organizer":
+        raise HTTPException(status_code=403, detail="Only the organizer can view submissions")
+
+    submissions = (
+        db.query(Submission)
+        .filter(Submission.competition_id == competition_id)
+        .order_by(Submission.submitted_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    result = []
+    for s in submissions:
+        team_name = None
+        if s.team_id:
+            team = db.query(Team).filter(Team.id == int(s.team_id)).first()
+            team_name = team.name if team else f"Team #{s.team_id}"
+        else:
+            profile = db.query(UserProfile).filter(UserProfile.user_id == s.user_id).first()
+            team_name = (profile.full_name if profile else None) or s.user_id
+
+        result.append({
+            "id": s.id,
+            "team_name": team_name,
+            "is_team": s.team_id is not None,
+            "score": float(s.score) if s.score is not None else None,
+            "metric_name": s.metric_name or competition.primary_metric,
+            "status": s.status,
+            "error_message": s.error_message,
+            "submitted_at": s.submitted_at,
+            "evaluated_at": s.evaluated_at,
+        })
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Tracks (organizer + participant visible)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1676,16 +1738,19 @@ def get_competition_monitoring(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    competition = (
-        db.query(Competition)
-        .filter(Competition.id == competition_id, Competition.is_draft == False)
-        .first()
-    )
+    competition = db.query(Competition).filter(Competition.id == competition_id).first()
 
     if not competition:
         raise HTTPException(status_code=404, detail="Competition not found")
 
     role = get_user_role(db, competition_id, current_user.id)
+
+    # Drafts are only visible to their own organizer — everyone else gets a 404,
+    # same as if the competition didn't exist yet. This is what lets an
+    # organizer open the Organizer Dashboard / Edit Competition flow for a
+    # competition that hasn't been published yet.
+    if competition.is_draft and role != "organizer":
+        raise HTTPException(status_code=404, detail="Competition not found")
 
     participants_count = (
         db.query(CompetitionParticipant)
@@ -1708,6 +1773,32 @@ def get_competition_monitoring(
         .filter(CompetitionDataset.competition_id == competition_id)
         .count()
     )
+
+    # Participant-sourced data ("Data Collection") competitions never expect an
+    # organizer-uploaded dataset — their samples come from DataSample instead —
+    # so their status is derived from submitted samples, not from datasets_count.
+    try:
+        task_config = json.loads(competition.dataset_config or "{}")
+        if not isinstance(task_config, dict):
+            task_config = {}
+    except (TypeError, ValueError):
+        task_config = {}
+    data_collection_enabled = bool(task_config.get("data_collection_enabled"))
+
+    if data_collection_enabled:
+        samples_count = (
+            db.query(DataSample)
+            .filter(DataSample.competition_id == competition_id)
+            .count()
+        )
+        data_collection_status = (
+            f"{samples_count} sample{'s' if samples_count != 1 else ''} collected"
+            if samples_count
+            else "Awaiting participant contributions"
+        )
+    else:
+        samples_count = 0
+        data_collection_status = "Configured" if datasets_count else "Not configured"
 
     submissions_count = (
         db.query(Submission)
@@ -1741,7 +1832,9 @@ def get_competition_monitoring(
         "teams_count": team_count if team_count > 0 else participants_count,
         "max_teams": competition.max_teams,
         "datasets_count": datasets_count,
-        "data_collection_status": "Configured" if datasets_count else "Not configured",
+        "data_collection_enabled": data_collection_enabled,
+        "samples_count": samples_count,
+        "data_collection_status": data_collection_status,
         "submissions_count": submissions_count,
         "best_score": best_score,
         "primary_metric": competition.primary_metric or "Not selected",
@@ -1759,17 +1852,20 @@ def get_competition_details(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    competition = (
-        db.query(Competition)
-        .filter(Competition.id == competition_id, Competition.is_draft == False)
-        .first()
-    )
+    competition = db.query(Competition).filter(Competition.id == competition_id).first()
 
     if not competition:
         raise HTTPException(status_code=404, detail="Competition not found")
 
-    d = competition_display_dict(competition)
     role = get_user_role(db, competition_id, current_user.id)
+
+    # A draft is only visible to its own organizer (e.g. so Edit Competition
+    # and the Organizer Dashboard keep working for a competition that hasn't
+    # been published yet). Everyone else gets the same 404 as if it didn't exist.
+    if competition.is_draft and role != "organizer":
+        raise HTTPException(status_code=404, detail="Competition not found")
+
+    d = competition_display_dict(competition)
     d["user_role"] = role
     d["is_organizer"] = role == "organizer"
     d["is_participant"] = role == "participant"

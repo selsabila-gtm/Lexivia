@@ -54,6 +54,10 @@ function normalizeRecentItem(item, index) {
         score: item?.score || "--",
         sync: item?.sync || "Recently",
 
+        // Used to route organizer rows to the Organizer Dashboard instead of
+        // the participant-facing competition details page.
+        role: String(item?.role || "").toUpperCase(),
+
         // Kept in case another part of your backend/frontend still needs it.
         // The dashboard UI now chooses the icon from item.type instead.
         icon: item?.icon || "🏆",
@@ -368,10 +372,12 @@ function Dashboard() {
                                             className="recent-row"
                                             key={item.id}
                                             onClick={() => {
-                                                if (item.competition_id) {
-                                                    navigate(`/competitions/${item.competition_id}`);
-                                                } else {
+                                                if (!item.competition_id) {
                                                     navigate("/competitions");
+                                                } else if (item.role === "ORGANIZER") {
+                                                    navigate(`/competitions/${item.competition_id}/organizer`);
+                                                } else {
+                                                    navigate(`/competitions/${item.competition_id}`);
                                                 }
                                             }}
                                             style={{ cursor: "pointer" }}

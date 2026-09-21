@@ -38,7 +38,12 @@ function getSteps(form) {
     s.push({ key: "evaluation", label: "Evaluation" });
     s.push({ key: "rules", label: "Rules" });
     s.push({ key: "complexity", label: "Complexity" });
-    s.push({ key: "datasets", label: "Datasets" });
+    // When Data Collection is enabled, participants source their own raw data —
+    // there's no organizer-provided dataset to demand, since the data collected
+    // from participants is what gets used for training and evaluation instead.
+    if (!form.participantSourcedData) {
+        s.push({ key: "datasets", label: "Datasets" });
+    }
     return s;
 }
 
@@ -1233,7 +1238,9 @@ function CreateCompetition({ editMode = false }) {
                     <p>
                         Participants source, record, or adapt their own raw data instead of
                         using a dataset you provide. Adds format limits, allowed sources, the
-                        annotation protocol, and a mandatory data usage license.
+                        annotation protocol, and a mandatory data usage license. You won't need
+                        to upload a dataset — the data collected from participants is what gets
+                        used for training and evaluation.
                     </p>
                 </div>
                 <label className="switch">

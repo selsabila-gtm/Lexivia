@@ -122,21 +122,27 @@ function getCardAction(item, navigate) {
   const status = normalizeStatus(item.status);
   const role = normalizeRole(item.user_role);
 
-  // Only OPEN competitions should allow View / Contribute / Join actions.
-  // CLOSED, ENDED, UPCOMING, DRAFT, or unknown statuses should only show details.
-  if (status !== "OPEN") {
-    return {
-      label: "See Details →",
-      className: "go-btn go-btn--closed-view",
-      onClick: () => navigate(`/competitions/${item.id}`),
-    };
-  }
-
+  // Organizers always land on the Organizer Dashboard for their own
+  // competitions — whether it's a draft, upcoming, open, or closed. This
+  // check must run before the status check below, otherwise a non-OPEN
+  // competition (including a draft the organizer hasn't published yet)
+  // would incorrectly send the organizer to the participant-facing
+  // "See Details" page instead.
   if (role === "organizer") {
     return {
       label: "View →",
       className: "go-btn go-btn--organizer",
       onClick: () => navigate(`/competitions/${item.id}/organizer`),
+    };
+  }
+
+  // Only OPEN competitions should allow View / Contribute / Join actions.
+  // CLOSED, ENDED, UPCOMING, or unknown statuses should only show details.
+  if (status !== "OPEN") {
+    return {
+      label: "See Details →",
+      className: "go-btn go-btn--closed-view",
+      onClick: () => navigate(`/competitions/${item.id}`),
     };
   }
 
