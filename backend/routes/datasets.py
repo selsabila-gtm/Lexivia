@@ -252,7 +252,9 @@ def get_dataset_config(competition_id: str, db: Session = Depends(get_db)):
 
     task_type = (competition.task_type or "").upper().strip()
     base_config = DATASET_CONFIGS.get(task_type)
-    if not base_config:
+    if not base_config and not task_type:
+        base_config = {}  # untyped competition: config comes from assets + tasks
+    if base_config is None:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -317,7 +319,7 @@ def update_task_config(
         raise HTTPException(status_code=403, detail="Only the organizer can update task config")
 
     task_type = (competition.task_type or "").upper().strip()
-    if task_type not in DATASET_CONFIGS:
+    if task_type and task_type not in DATASET_CONFIGS:  # untyped (assets + tasks) competitions are fine
         raise HTTPException(status_code=400, detail=f"Unsupported task_type: {task_type}")
 
     # Merge with existing config
@@ -431,7 +433,7 @@ def create_prompts_batch(
         raise HTTPException(status_code=403, detail="Only the organizer can add prompts")
 
     task_type = (competition.task_type or "").upper().strip()
-    if task_type not in DATASET_CONFIGS:
+    if task_type and task_type not in DATASET_CONFIGS:  # untyped (assets + tasks) competitions are fine
         raise HTTPException(status_code=400, detail=f"Unsupported task_type: {task_type}")
 
     prompts_text: list[str] = body.get("prompts", [])

@@ -48,10 +48,38 @@ class CompetitionOut(BaseModel):
         from_attributes = True
 
 
+class AssetIn(BaseModel):
+    """One asset slot of a sample (DataComponent). Constraints are validated
+    against services/task_registry.py, so new asset options need no schema change."""
+    key: str
+    name: str
+    type: str                                   # TEXT | AUDIO | ...
+    required: bool = True
+    constraints: dict = {}
+
+
+class TaskTargetIn(BaseModel):
+    type: str                                   # ASSET | SAMPLE | TASK_OUTPUT
+    ref: Optional[str] = None                   # asset key / task key / None for SAMPLE
+
+
+class TaskIn(BaseModel):
+    key: str
+    name: str
+    type: str                                   # TRANSCRIPTION | CLASSIFICATION | NER | ...
+    target: TaskTargetIn
+    config: dict = {}                           # task-type-specific, stored as JSON
+    depends_on: List[str] = []                  # extra dependencies on earlier tasks (keys)
+    instructions: Optional[str] = None
+
+
 class CompetitionCreateIn(BaseModel):
     competition_name: str
-    task_type: str
+    # Legacy only. Competitions are no longer typed; defined by assets + tasks.
+    task_type: Optional[str] = None
     description: str
+    assets: List[AssetIn] = []
+    tasks: List[TaskIn] = []
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     prize_pool: Optional[int] = None

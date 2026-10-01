@@ -62,6 +62,8 @@ from models import (
     DataSample,
 )
 from schemas import CompetitionCreateIn, CompetitionActionOut
+from services.task_registry import registry_payload
+from services.structure_service import validate_or_400, sync_structure, load_structure
 from .utils import get_db, get_current_user, get_icon_for_task
 
 router = APIRouter(tags=["competitions"])
@@ -140,7 +142,9 @@ TASK_CONFIG_DEFAULTS: dict[str, dict] = {
     },
 }
 
-PROMPT_TASKS = {"AUDIO_SYNTHESIS", "SPEECH_EMOTION"}
+# NOTE: TASK_CONFIG_DEFAULTS above is LEGACY — only used for competitions created
+# before the generic assets + tasks model (competition.task_type is set).
+# New competitions have task_type = NULL; see services/task_registry.py.
 
 
 def parse_date(value):
@@ -225,6 +229,13 @@ def competition_display_dict(competition: Competition) -> dict:
 
 
 def delete_competition_related_rows(db: Session, competition_id: str):
+    # Generic structure, children first (annotations/sample_assets -> samples/tasks/components)
+    db.execute(text("DELETE FROM annotations WHERE sample_id IN (SELECT id FROM samples WHERE competition_id = :cid)"), {"cid": competition_id})
+    db.execute(text("DELETE FROM sample_assets WHERE sample_id IN (SELECT id FROM samples WHERE competition_id = :cid)"), {"cid": competition_id})
+    db.execute(text("DELETE FROM samples WHERE competition_id = :cid"), {"cid": competition_id})
+    db.execute(text("UPDATE competition_tasks SET target_task_id = NULL WHERE competition_id = :cid"), {"cid": competition_id})
+    db.execute(text("DELETE FROM competition_tasks WHERE competition_id = :cid"), {"cid": competition_id})
+    db.execute(text("DELETE FROM data_components WHERE competition_id = :cid"), {"cid": competition_id})
     db.execute(text("DELETE FROM competition_datasets WHERE competition_id = :cid"), {"cid": competition_id})
     db.execute(text("DELETE FROM competition_participants WHERE competition_id = :cid"), {"cid": competition_id})
     db.execute(text("DELETE FROM competition_organizers WHERE competition_id = :cid"), {"cid": competition_id})
@@ -233,11 +244,26 @@ def delete_competition_related_rows(db: Session, competition_id: str):
     db.execute(text("DELETE FROM dataset_versions WHERE competition_id = :cid"), {"cid": competition_id})
 
 
+def _derive_collection_inputs(clean_assets: list[dict]) -> list[dict]:
+    """A contributed instance IS a sample, so its inputs are exactly the sample's
+    assets. Derived from the structure so the two can never drift apart."""
+    inputs = []
+    for a in clean_assets:
+        c = a["constraints"]
+        audio = a["type"] == "AUDIO"
+        inputs.append({
+            "name": a["name"],
+            "asset_key": a["key"],
+            "modality": "audio" if audio else "text",
+            "max_length": c.get("max_duration_seconds") if audio else c.get("max_words"),
+        })
+    return inputs
+
+
 def validate_competition_payload(data: CompetitionCreateIn):
+    """Validates the payload and returns (clean_assets, clean_tasks)."""
     if not data.competition_name or not data.competition_name.strip():
         raise HTTPException(status_code=400, detail="Competition name is required")
-    if not data.task_type or not data.task_type.strip():
-        raise HTTPException(status_code=400, detail="Task type is required")
     if not data.description or not data.description.strip():
         raise HTTPException(status_code=400, detail="Description is required")
 
@@ -291,7 +317,14 @@ def validate_competition_payload(data: CompetitionCreateIn):
     if validation_date and freeze_date and freeze_date < validation_date:
         raise HTTPException(status_code=400, detail="Freeze date cannot be before validation date")
 
+    clean_assets, clean_tasks = validate_or_400(
+        [a.model_dump() for a in data.assets], [t.model_dump() for t in data.tasks]
+    )
+
     task_config = getattr(data, "task_config", None) or {}
+    if getattr(data, "data_collection_enabled", False):
+        task_config.setdefault("data_collection", {})["inputs"] = _derive_collection_inputs(clean_assets)
+        data.task_config = task_config
 
     if getattr(data, "tracks_enabled", False):
         validate_tracks_config(task_config.get("tracks") or [])
@@ -308,6 +341,8 @@ def validate_competition_payload(data: CompetitionCreateIn):
     # Independent of the flags above: whenever combined evaluation scoring is
     # selected, its weights must be valid, whether or not tracks are enabled.
     validate_evaluation_scoring(task_config.get("evaluation_scoring") or {})
+
+    return clean_assets, clean_tasks
 
 
 def validate_tracks_config(tracks: list):
@@ -416,15 +451,16 @@ def _merge_task_config(task_type: str, organizer_config: dict) -> dict:
 
 def build_competition_record(data: CompetitionCreateIn, is_draft: bool) -> Competition:
     task_config = getattr(data, "task_config", None) or {}
-    merged = _merge_task_config(data.task_type, task_config)
-    # Strip the "prompts" key from dataset_config — prompts live in competition_prompts table
-    config_to_store = _clean_list_values({k: v for k, v in merged.items() if k != "prompts"})
+    # No competition types: nothing to merge defaults from. Assets/tasks live in
+    # their own tables; dataset_config only carries tracks/phases/data-collection/
+    # license/evaluation. "prompts" live in competition_prompts.
+    config_to_store = _clean_list_values({k: v for k, v in task_config.items() if k != "prompts"})
 
     return Competition(
         title=data.competition_name,
         description=data.description,
         is_draft=is_draft,
-        task_type=data.task_type,
+        task_type=None,
         start_date=data.start_date,
         end_date=data.end_date,
         prize_pool=data.prize_pool,
@@ -450,11 +486,10 @@ def build_competition_record(data: CompetitionCreateIn, is_draft: bool) -> Compe
 
 def _seed_prompts(db: Session, competition_id: str, task_type: str, task_config: dict):
     """
-    If task_type requires prompts (AUDIO_SYNTHESIS, SPEECH_EMOTION) and the
-    organizer supplied them, wipe existing prompts and re-seed from the config.
+    If the organizer supplied source prompts (sentences to read aloud, texts to
+    annotate...), wipe existing prompts and re-seed from the config. Applies to
+    any competition: prompts are no longer tied to a task type.
     """
-    if task_type not in PROMPT_TASKS:
-        return
     raw_prompts = task_config.get("prompts") or []
     if not raw_prompts:
         return
@@ -472,6 +507,35 @@ def _seed_prompts(db: Session, competition_id: str, task_type: str, task_config:
                 used_count=0,
                 created_at=datetime.utcnow().isoformat(),
             ))
+
+
+def _persist_structure(db: Session, competition: Competition, data: CompetitionCreateIn,
+                       clean: tuple | None, is_draft: bool):
+    """
+    Publish: `clean` is the validated (assets, tasks) and goes to the tables.
+    Draft: the organizer may be mid-way, so try to validate; if the structure
+    isn't valid yet, keep the raw input in dataset_config["structure_draft"] so
+    nothing is lost and the wizard can restore it. Tables are never written
+    with an invalid structure.
+    """
+    cfg = json.loads(competition.dataset_config or "{}")
+    if clean is None:
+        try:
+            clean = validate_or_400(
+                [a.model_dump() for a in data.assets], [t.model_dump() for t in data.tasks]
+            )
+        except HTTPException:
+            clean = None
+
+    if clean is not None:
+        sync_structure(db, competition.id, clean[0], clean[1])
+        cfg.pop("structure_draft", None)
+    elif is_draft:
+        cfg["structure_draft"] = {
+            "assets": [a.model_dump() for a in data.assets],
+            "tasks": [t.model_dump() for t in data.tasks],
+        }
+    competition.dataset_config = json.dumps(cfg)
 
 
 def apply_competition_filters(query, db, search, category, tab, current_user):
@@ -762,7 +826,7 @@ def get_dataset_config(
     if not competition:
         raise HTTPException(status_code=404, detail="Competition not found")
 
-    task_type = (competition.task_type or "").upper()
+    task_type = (competition.task_type or "").upper()  # legacy competitions only
 
     # Load organizer config stored on the competition
     try:
@@ -773,16 +837,24 @@ def get_dataset_config(
     # Merge with defaults (organizer config wins for any key it provides)
     merged = _merge_task_config(task_type, stored)
 
-    # For audio prompt tasks: expose how many prompts are available
-    if task_type in PROMPT_TASKS:
-        prompt_count = (
-            db.query(CompetitionPrompt)
-            .filter(CompetitionPrompt.competition_id == competition_id)
-            .count()
-        )
-        merged["prompt_count"] = prompt_count
-
+    merged.pop("structure_draft", None)
+    merged["prompt_count"] = (
+        db.query(CompetitionPrompt)
+        .filter(CompetitionPrompt.competition_id == competition_id)
+        .count()
+    )
+    # Generic structure: what a sample contains and which tasks run on it.
+    merged.update(load_structure(db, competition_id))
     return merged
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Asset / task type registry (drives the wizard's forms — nothing hard-coded there)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/competition-schema")
+def get_competition_schema(current_user=Depends(get_current_user)):
+    return registry_payload()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -826,6 +898,7 @@ def save_competition_draft(
 
     db.add(competition)
     db.flush()
+    _persist_structure(db, competition, data, None, is_draft=True)
 
     db.add(
         CompetitionOrganizer(
@@ -837,7 +910,7 @@ def save_competition_draft(
     )
 
     task_config = getattr(data, "task_config", None) or {}
-    _seed_prompts(db, competition.id, data.task_type or "", task_config)
+    _seed_prompts(db, competition.id, "", task_config)
 
     db.commit()
     db.refresh(competition)
@@ -855,11 +928,12 @@ def create_competition(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    validate_competition_payload(data)
+    clean = validate_competition_payload(data)
 
     competition = build_competition_record(data, is_draft=False)
     db.add(competition)
     db.flush()
+    _persist_structure(db, competition, data, clean, is_draft=False)
 
     db.add(
         CompetitionOrganizer(
@@ -871,7 +945,7 @@ def create_competition(
     )
 
     task_config = getattr(data, "task_config", None) or {}
-    _seed_prompts(db, competition.id, data.task_type or "", task_config)
+    _seed_prompts(db, competition.id, "", task_config)
 
     db.commit()
     db.refresh(competition)
@@ -1882,6 +1956,15 @@ def get_competition_details(
     )
     d["has_pending_request"] = pending_req is not None
 
+    structure = load_structure(db, competition_id)
+    if not structure["assets"] and not structure["tasks"]:
+        # unfinished draft: structure the organizer typed but that wasn't valid yet
+        draft = (d.get("task_config") or {}).get("structure_draft") or {}
+        structure = {"assets": draft.get("assets", []), "tasks": draft.get("tasks", [])}
+    d["assets"], d["tasks"] = structure["assets"], structure["tasks"]
+    if isinstance(d.get("task_config"), dict):
+        d["task_config"].pop("structure_draft", None)
+
     return d
 
 
@@ -1896,7 +1979,7 @@ def update_competition(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    validate_competition_payload(data)
+    clean = validate_competition_payload(data)
 
     competition = db.query(Competition).filter(Competition.id == competition_id).first()
 
@@ -1913,7 +1996,7 @@ def update_competition(
         raise HTTPException(status_code=403, detail="Not allowed")
 
     competition.title = data.competition_name
-    competition.task_type = data.task_type
+    competition.task_type = None  # competitions are defined by assets + tasks, not a type
     competition.description = data.description
     competition.start_date = data.start_date
     competition.end_date = data.end_date
@@ -1942,12 +2025,12 @@ def update_competition(
 
     # Save updated task config
     task_config = getattr(data, "task_config", None) or {}
-    merged = _merge_task_config(data.task_type, task_config)
-    config_to_store = _clean_list_values({k: v for k, v in merged.items() if k != "prompts"})
+    config_to_store = _clean_list_values({k: v for k, v in task_config.items() if k != "prompts"})
     competition.dataset_config = json.dumps(config_to_store)
+    _persist_structure(db, competition, data, clean, is_draft=False)
 
     # Re-seed prompts if applicable
-    _seed_prompts(db, competition_id, data.task_type or "", task_config)
+    _seed_prompts(db, competition_id, "", task_config)
 
     db.commit()
 

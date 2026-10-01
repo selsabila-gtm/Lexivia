@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, Column, String, Integer, Boolean, Text, ForeignKey, Float, Numeric
+from sqlalchemy import JSON, Column, String, Integer, Boolean, Text, ForeignKey, Float, Numeric, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime
@@ -53,6 +53,17 @@ class Competition(Base):
         "CompetitionDataset",
         back_populates="competition",
         cascade="all, delete-orphan",
+    )
+
+    # Structure of a sample + what is done on it. Competition.task_type is
+    # legacy: new competitions leave it NULL (there are no competition types).
+    data_components = relationship(
+        "DataComponent", cascade="all, delete-orphan",
+        order_by="DataComponent.position", foreign_keys="DataComponent.competition_id",
+    )
+    tasks = relationship(
+        "CompetitionTask", cascade="all, delete-orphan",
+        order_by="CompetitionTask.position", foreign_keys="CompetitionTask.competition_id",
     )
 
 
@@ -236,3 +247,93 @@ class Submission(Base):
     submitted_at = Column(String, default=lambda: datetime.utcnow().isoformat())
     evaluated_at = Column(String, nullable=True)
     created_at = Column(String, default=lambda: datetime.utcnow().isoformat())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Generic assets + tasks (replaces predefined competition types)
+#
+#   Competition
+#     ├── DataComponent[]     defines an asset slot: type + constraints
+#     ├── CompetitionTask[]   what to do, what it targets, JSON config
+#     └── Sample[]
+#           ├── SampleAsset[] the actual asset for one DataComponent
+#           └── Annotation[]  the output of one task for the sample
+# ─────────────────────────────────────────────────────────────────────────────
+
+class DataComponent(Base):
+    __tablename__ = "data_components"
+    __table_args__ = (UniqueConstraint("competition_id", "key", name="uq_data_component_key"),)
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    competition_id = Column(String, ForeignKey("competitions.id", ondelete="CASCADE"), nullable=False, index=True)
+    key = Column(String, nullable=False)          # stable slug, e.g. "audio_1"
+    name = Column(String, nullable=False)         # display name
+    type = Column(String, nullable=False)         # TEXT | AUDIO | ... (see services/task_registry.py)
+    required = Column(Boolean, default=True)
+    constraints = Column(JSON, default=dict)      # max_words, max_duration_seconds, allowed_formats...
+    position = Column(Integer, default=0)
+
+
+class CompetitionTask(Base):
+    __tablename__ = "competition_tasks"
+    __table_args__ = (UniqueConstraint("competition_id", "key", name="uq_competition_task_key"),)
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    competition_id = Column(String, ForeignKey("competitions.id", ondelete="CASCADE"), nullable=False, index=True)
+    key = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    type = Column(String, nullable=False)         # TRANSCRIPTION | CLASSIFICATION | NER | ...
+
+    # ASSET -> target_component_id, SAMPLE -> neither, TASK_OUTPUT -> target_task_id
+    target_type = Column(String, nullable=False)  # ASSET | SAMPLE | TASK_OUTPUT
+    target_component_id = Column(String, ForeignKey("data_components.id"), nullable=True)
+    target_task_id = Column(String, ForeignKey("competition_tasks.id"), nullable=True)
+
+    config = Column(JSON, default=dict)           # per-task-type options (labels, max_words...)
+    depends_on = Column(JSON, default=list)       # explicit extra dependencies (task keys)
+    instructions = Column(Text, nullable=True)
+    position = Column(Integer, default=0)         # topological order
+
+
+class Sample(Base):
+    __tablename__ = "samples"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    competition_id = Column(String, ForeignKey("competitions.id", ondelete="CASCADE"), nullable=False, index=True)
+    contributor_id = Column(String, ForeignKey("user_profiles.user_id"), nullable=True, index=True)
+    status = Column(String, default="pending")
+    version_tag = Column(String, nullable=True, index=True)
+    meta_data = Column(JSON, default=dict)
+    submitted_at = Column(String, default=lambda: datetime.utcnow().isoformat())
+
+    assets = relationship("SampleAsset", cascade="all, delete-orphan", back_populates="sample")
+    annotations = relationship("Annotation", cascade="all, delete-orphan", back_populates="sample")
+
+
+class SampleAsset(Base):
+    __tablename__ = "sample_assets"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    sample_id = Column(String, ForeignKey("samples.id", ondelete="CASCADE"), nullable=False, index=True)
+    component_id = Column(String, ForeignKey("data_components.id"), nullable=False, index=True)
+    text_content = Column(Text, nullable=True)         # TEXT assets
+    storage_path = Column(String, nullable=True)       # file-backed assets (AUDIO...)
+    duration_seconds = Column(Float, nullable=True)
+    meta_data = Column(JSON, default=dict)             # format, source, provenance...
+
+    sample = relationship("Sample", back_populates="assets")
+
+
+class Annotation(Base):
+    __tablename__ = "annotations"
+    __table_args__ = (UniqueConstraint("sample_id", "task_id", "annotator_id", name="uq_annotation_once"),)
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    sample_id = Column(String, ForeignKey("samples.id", ondelete="CASCADE"), nullable=False, index=True)
+    task_id = Column(String, ForeignKey("competition_tasks.id"), nullable=False, index=True)
+    annotator_id = Column(String, ForeignKey("user_profiles.user_id"), nullable=True)
+    value = Column(JSON, nullable=True)                # shape depends on the task type's `produces`
+    status = Column(String, default="submitted")
+    created_at = Column(String, default=lambda: datetime.utcnow().isoformat())
+
+    sample = relationship("Sample", back_populates="annotations")

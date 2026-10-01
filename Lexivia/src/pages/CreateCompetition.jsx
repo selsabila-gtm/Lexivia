@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import "../styles/CreateCompetition.css";
@@ -21,7 +21,8 @@ async function getFreshToken() {
 function getSteps(form) {
     const s = [
         { key: "basic", label: "Basic Info" },
-        { key: "taskConfig", label: "Task Config" },
+        { key: "assets", label: "Sample Assets" },
+        { key: "tasks", label: "Tasks" },
     ];
     if (form.participantSourcedData) {
         s.push({ key: "dataCollection", label: "Data Collection" });
@@ -47,76 +48,11 @@ function getSteps(form) {
     return s;
 }
 
-// Task types now use exact DB values so they round-trip through the API correctly.
-const taskTypes = [
-    { value: "TEXT_CLASSIFICATION", label: "Text Classification" },
-    { value: "NER", label: "Named Entity Recognition" },
-    { value: "SENTIMENT_ANALYSIS", label: "Sentiment Analysis" },
-    { value: "TRANSLATION", label: "Translation" },
-    { value: "QUESTION_ANSWERING", label: "Question Answering" },
-    { value: "SUMMARIZATION", label: "Summarization" },
-    { value: "AUDIO_SYNTHESIS", label: "Audio Synthesis" },
-    { value: "AUDIO_TRANSCRIPTION", label: "Audio Transcription" },
-    { value: "SPEECH_EMOTION", label: "Speech Emotion" },
-    { value: "AUDIO_EVENT_DETECTION", label: "Audio Event Detection" },
-    { value: "MULTI_TASK_ANNOTATION", label: "Multi-Task / Multimodal Annotation" },
-    { value: "CUSTOM", label: "Custom / Personalized Competition" },
-];
-
-// Task types whose Data Collection builder is fully organizer-defined —
-// any number of inputs, any names, any modalities, any annotation tasks —
-// rather than a fixed shape derived from the task type.
-const FLEXIBLE_TASK_TYPES = ["MULTI_TASK_ANNOTATION", "CUSTOM"];
-
 // Source types a team can pull participant-sourced data from (generic, not audio-specific)
 const SOURCE_TYPE_OPTIONS = [
     { value: "public_platform", label: "Public platform (YouTube, etc.)" },
     { value: "self_recorded", label: "Recorded / written by the participant" },
     { value: "existing_dataset", label: "Existing dataset the team adapts" },
-];
-
-const MODALITY_OPTIONS = [
-    { value: "text", label: "Text" },
-    { value: "audio", label: "Audio" },
-];
-
-// An instance can carry more than one input, and two inputs can share the
-// same modality — e.g. Question Answering needs a "Question" and a
-// "Context Passage", both text, each with its own length limit. Most preset
-// task types have a fixed, well-known input shape; only MULTI_TASK_ANNOTATION
-// and CUSTOM leave the input list fully open to the organizer.
-function getDefaultInputsForTaskType(taskType) {
-    switch (taskType) {
-        case "QUESTION_ANSWERING":
-            return [
-                { id: 1, name: "Question", modality: "text", maxLength: 30, locked: true },
-                { id: 2, name: "Context Passage", modality: "text", maxLength: 300, locked: true },
-            ];
-        case "TRANSLATION":
-            return [{ id: 1, name: "Source Text", modality: "text", maxLength: 100, locked: true }];
-        case "TEXT_CLASSIFICATION":
-        case "NER":
-        case "SENTIMENT_ANALYSIS":
-        case "SUMMARIZATION":
-            return [{ id: 1, name: "Text", modality: "text", maxLength: 200, locked: true }];
-        case "AUDIO_SYNTHESIS":
-        case "AUDIO_TRANSCRIPTION":
-        case "SPEECH_EMOTION":
-        case "AUDIO_EVENT_DETECTION":
-            return [{ id: 1, name: "Audio", modality: "audio", maxLength: 10, locked: true }];
-        case "MULTI_TASK_ANNOTATION":
-        case "CUSTOM":
-            return [{ id: Date.now(), name: "Text", modality: "text", maxLength: 50, locked: false }];
-        default:
-            return [{ id: 1, name: "Text", modality: "text", maxLength: 200, locked: true }];
-    }
-}
-
-// How a single annotation task's labels get applied to an instance.
-const ANNOTATION_TYPE_OPTIONS = [
-    { value: "single_label", label: "Single Label", hint: "One label per instance (e.g. Sentiment: Positive/Negative/Neutral)." },
-    { value: "multi_label", label: "Multi Label", hint: "Any number of labels can apply at once (e.g. topics)." },
-    { value: "span", label: "Span / Entity Tagging", hint: "Labels are entity types tagged over spans of text (e.g. NER: PERSON, ORG, LOCATION)." },
 ];
 
 const primaryMetrics = [
@@ -171,65 +107,142 @@ const PREDEFINED_SKILLS = [
     "Prompt Engineering",
 ];
 
-// ── Default task configs ───────────────────────────────────────────────────
-function getDefaultTaskConfig(taskType) {
-    switch (taskType) {
-        case "TEXT_CLASSIFICATION":
-            return { labels: ["Finance", "Technology", "Healthcare", "Politics", "Sports", "Entertainment", "Science", "Other"] };
-        case "NER":
-            return { entity_types: ["PER", "ORG", "LOC", "MISC", "DATE", "MONEY"] };
-        case "SENTIMENT_ANALYSIS":
-            return {
-                sentiment_labels: ["positive", "negative", "neutral", "mixed"],
-                aspect_categories: ["product", "service", "price", "delivery", "support"],
-            };
-        case "TRANSLATION":
-            return { source_lang: "EN", target_lang: "AR", glossary_raw: "" };
-        case "QUESTION_ANSWERING":
-            return { qa_type: "extractive" };
-        case "SUMMARIZATION":
-            return { target_ratio: 0.1, max_ratio: 0.15, min_summary_words: 20 };
-        case "AUDIO_SYNTHESIS":
-            return { prompts: [] };
-        case "AUDIO_TRANSCRIPTION":
-            return { speakers: 1, with_timestamps: false };
-        case "SPEECH_EMOTION":
-            return {
-                emotion_labels: ["neutral", "happy", "sad", "angry", "surprised", "fearful", "disgusted"],
-                prompts: [],
-            };
-        case "AUDIO_EVENT_DETECTION":
-            return { event_types: ["speech", "music", "noise", "silence", "applause", "laughter", "alarm"] };
-        case "MULTI_TASK_ANNOTATION":
-            // Generic config for a competition with several simultaneous label
-            // sets on the same instance (e.g. Sentiment + Sarcasm + Hate Speech).
-            // How the underlying data is sourced/annotated is controlled by the
-            // separate, task-independent "Data Collection" toggle.
-            return {
-                tasks: [
-                    { id: 1, name: "Sentiment", type: "single_label", labels: ["Positive", "Negative", "Neutral"] },
-                    { id: 2, name: "Sarcasm", type: "single_label", labels: ["Yes", "No"] },
-                    { id: 3, name: "Hate Speech", type: "single_label", labels: ["Hateful", "Not Hateful"] },
-                ],
-            };
-        case "CUSTOM":
-            // A blank slate: the organizer defines every input (Data Collection
-            // step) and every annotation task from scratch, plus free-form notes
-            // for anything the structured fields don't cover.
-            return {
-                tasks: [
-                    { id: 1, name: "", type: "single_label", labels: ["Label A", "Label B"] },
-                ],
-                custom_notes: "",
-            };
-        default:
-            return {};
+// ── Generic assets + tasks ───────────────────────────────────────────────────
+// A competition has no "type". It is defined by:
+//   1. Sample Assets — the units of data one sample is made of (Text, Audio...),
+//      each with its own constraints.
+//   2. Tasks — generic operations (Transcription, Classification, NER...) that
+//      each target an ASSET, the whole SAMPLE, or the TASK_OUTPUT of another
+//      task, and may depend on earlier tasks (cycles are not allowed).
+// The list of asset types, task types and each one's option schema comes from
+// GET /competition-schema, so new ones need no change here.
+
+
+function defaultsFromFields(fields = []) {
+    const out = {};
+    fields.forEach((f) => {
+        if (f.default !== undefined) out[f.key] = Array.isArray(f.default) ? [...f.default] : f.default;
+    });
+    return out;
+}
+
+function nextKey(prefix, existing) {
+    let n = 1;
+    while (existing.includes(`${prefix}_${n}`)) n += 1;
+    return `${prefix}_${n}`;
+}
+
+function isBlankValue(v) {
+    return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+}
+
+function listFromValue(v) {
+    const lines = Array.isArray(v) ? v : String(v || "").split("\n");
+    return lines.map((s) => String(s).trim()).filter(Boolean);
+}
+
+// Direct dependencies of a task: its explicit "depends on" list plus, when it
+// targets another task's output, that task.
+function taskDeps(task) {
+    const deps = [...(task.dependsOn || [])];
+    if (task.targetType === "TASK_OUTPUT" && task.targetRef) deps.push(task.targetRef);
+    return deps;
+}
+
+// true if task `fromKey` depends (directly or transitively) on `onKey`
+function dependsTransitively(tasks, fromKey, onKey, seen = new Set()) {
+    if (seen.has(fromKey)) return false;
+    seen.add(fromKey);
+    const t = tasks.find((x) => x.key === fromKey);
+    if (!t) return false;
+    return taskDeps(t).some((d) => d === onKey || dependsTransitively(tasks, d, onKey, seen));
+}
+
+function findTaskCycle(tasks) {
+    const state = {};
+    const stack = [];
+    const visit = (key) => {
+        state[key] = 1;
+        stack.push(key);
+        const t = tasks.find((x) => x.key === key);
+        for (const d of t ? taskDeps(t) : []) {
+            if (!tasks.some((x) => x.key === d)) continue;
+            if (state[d] === 1) return [...stack.slice(stack.indexOf(d)), d];
+            if (!state[d]) {
+                const found = visit(d);
+                if (found) return found;
+            }
+        }
+        stack.pop();
+        state[key] = 2;
+        return null;
+    };
+    for (const t of tasks) {
+        if (!state[t.key]) {
+            const found = visit(t.key);
+            if (found) return found;
+        }
     }
+    return null;
+}
+
+// A field with show_if only applies while another field has a given value
+// (e.g. min/max labels only matter when "Allow multiple labels" is on).
+function isFieldVisible(f, fields, values) {
+    if (!f.show_if) return true;
+    return Object.entries(f.show_if).every(([k, want]) => {
+        const cur = values?.[k] ?? fields.find((x) => x.key === k)?.default;
+        return Boolean(cur) === Boolean(want) && (typeof want !== "boolean" ? cur === want : true);
+    });
+}
+
+// Validates a config object against a registry field list (mirrors the server).
+function validateFieldValues(fields, values, errKey, errors, who) {
+    fields.forEach((f) => {
+        if (!isFieldVisible(f, fields, values)) return;
+        const v = values?.[f.key];
+        const name = `${who}: ${f.label}`;
+        if (f.type === "string_list") {
+            const n = listFromValue(v).length;
+            const min = f.min_items ?? (f.required ? 1 : 0);
+            if ((f.required || n > 0) && n < min)
+                errors[`${errKey}-${f.key}`] = `${name} needs at least ${min} ${min === 1 ? "entry" : "entries"}.`;
+            return;
+        }
+        if (f.type === "multi_select") {
+            if (f.required && !(v || []).length) errors[`${errKey}-${f.key}`] = `${name}: select at least one.`;
+            return;
+        }
+        if (isBlankValue(v)) {
+            if (f.required) errors[`${errKey}-${f.key}`] = `${name} is required.`;
+            return;
+        }
+        if (f.type === "integer" || f.type === "number") {
+            const num = Number(v);
+            if (Number.isNaN(num)) errors[`${errKey}-${f.key}`] = `${name} must be a number.`;
+            else if (f.min !== undefined && num < f.min) errors[`${errKey}-${f.key}`] = `${name} must be at least ${f.min}.`;
+            else if (f.max !== undefined && num > f.max) errors[`${errKey}-${f.key}`] = `${name} must be at most ${f.max}.`;
+        }
+    });
+}
+
+// Strip blanks and coerce so the payload is clean (server validates again).
+function serializeFieldValues(fields, values) {
+    const out = {};
+    fields.forEach((f) => {
+        if (!isFieldVisible(f, fields, values)) return;
+        const v = values?.[f.key];
+        if (isBlankValue(v)) return;
+        if (f.type === "string_list") out[f.key] = listFromValue(v);
+        else if (f.type === "integer") out[f.key] = parseInt(v, 10);
+        else if (f.type === "number") out[f.key] = Number(v);
+        else out[f.key] = v;
+    });
+    return out;
 }
 
 const initialForm = {
     competitionName: "",
-    taskType: "",
     description: "",
     startDate: "",
     endDate: "",
@@ -254,8 +267,14 @@ const initialForm = {
     // Join method: "auto" = automatic acceptance; "manual" = organizer approval required
     joinMethod: "auto",
 
-    // Task-specific annotation config set by organizer
-    taskConfig: {},
+    // What a sample is made of, and what is done on it (see helpers above).
+    // assets: [{ id, key, name, type, required, constraints }]
+    // tasks:  [{ id, key, name, type, targetType, targetRef, dependsOn, config, instructions }]
+    assets: [],
+    tasks: [],
+    legacyTaskType: "",
+    // Optional source prompts shown to contributors (one per line)
+    prompts: "",
 
     // ── Independent platform capabilities ───────────────────────────────────────
     // Each of these can be turned on by itself; a competition can use any
@@ -276,13 +295,11 @@ const initialForm = {
     ],
 
     // Data Collection: participants source, record, or adapt their own raw
-    // data instead of using an organizer-provided dataset. Governs the shape
-    // of a contributed instance (one or more named inputs, each text or
-    // audio, with its own length limit), allowed sources, and the annotation
-    // protocol — independent of which task type or label set is annotated.
+    // data instead of using an organizer-provided dataset. A contributed
+    // instance is a sample, so its inputs are the Sample Assets; this governs
+    // allowed sources and the annotation protocol.
     participantSourcedData: false,
     dataCollection: {
-        inputs: getDefaultInputsForTaskType(""),
         allowedSourceTypes: ["public_platform", "self_recorded"],
         requireProvenance: true,
         annotatorsPerInstance: 2,
@@ -333,34 +350,19 @@ function mapCompetitionToForm(c) {
     } catch {
         taskConfig = {};
     }
-    // Re-inflate glossary_raw for the TRANSLATION form UI
-    if (c.task_type === "TRANSLATION" && Array.isArray(taskConfig.glossary)) {
-        taskConfig.glossary_raw = taskConfig.glossary.map((g) => `${g.src} → ${g.tgt}`).join("\n");
-        delete taskConfig.glossary;
-    }
-    // Re-inflate prompts array for audio tasks
-    if (!taskConfig.prompts) taskConfig.prompts = [];
 
     // Tracks / Phases / Data Collection / License / Evaluation each ride as
-    // their own flat keys inside dataset_config — independent of each other
-    // and of whatever the per-task annotation config (taskConfig) holds.
+    // their own flat keys inside dataset_config — independent of each other.
     const tracksCfg = taskConfig.tracks_enabled ? (taskConfig.tracks || []) : [];
     const phasesCfg = taskConfig.phases_enabled ? (taskConfig.phases || []) : null;
     const dataCollectionCfg = taskConfig.data_collection || {};
     const licenseCfg = taskConfig.license || {};
     const evalCfg = taskConfig.evaluation_scoring || {};
-    delete taskConfig.tracks_enabled;
-    delete taskConfig.tracks;
-    delete taskConfig.phases_enabled;
-    delete taskConfig.phases;
-    delete taskConfig.data_collection_enabled;
-    delete taskConfig.data_collection;
-    delete taskConfig.license;
-    delete taskConfig.evaluation_scoring;
 
     return {
         competitionName: c.title || "",
-        taskType: c.task_type || c.category || "",
+        // Only set for competitions created before assets + tasks existed.
+        legacyTaskType: c.task_type || "",
         description: c.description || "",
         startDate: c.start_date || "",
         endDate: c.end_date || "",
@@ -384,9 +386,26 @@ function mapCompetitionToForm(c) {
 
         joinMethod: c.join_method || "auto",
 
-        taskConfig: Object.keys(taskConfig).length
-            ? taskConfig
-            : getDefaultTaskConfig(c.task_type || ""),
+        assets: (c.assets || []).map((a) => ({
+            id: a.id || a.key,
+            key: a.key,
+            name: a.name || "",
+            type: a.type,
+            required: a.required !== false,
+            constraints: a.constraints || {},
+        })),
+        tasks: (c.tasks || []).map((t) => ({
+            id: t.id || t.key,
+            key: t.key,
+            name: t.name || "",
+            type: t.type,
+            targetType: t.target?.type || "",
+            targetRef: t.target?.ref || "",
+            dependsOn: t.depends_on || [],
+            config: t.config || {},
+            instructions: t.instructions || "",
+        })),
+        prompts: "",
 
         tracksEnabled: !!taskConfig.tracks_enabled,
         tracks: tracksCfg,
@@ -395,16 +414,9 @@ function mapCompetitionToForm(c) {
         phases: phasesCfg && phasesCfg.length ? phasesCfg : initialForm.phases,
 
         participantSourcedData: !!taskConfig.data_collection_enabled,
+        // The instance inputs are NOT stored on the form: a contributed
+        // instance is a sample, so its inputs are always the sample assets.
         dataCollection: {
-            inputs: Array.isArray(dataCollectionCfg.inputs) && dataCollectionCfg.inputs.length
-                ? dataCollectionCfg.inputs.map((inp) => ({
-                    id: inp.id ?? Date.now() + Math.random(),
-                    name: inp.name || "",
-                    modality: inp.modality || "text",
-                    maxLength: inp.max_length ?? (inp.modality === "audio" ? 10 : 50),
-                    locked: !FLEXIBLE_TASK_TYPES.includes(c.task_type || ""),
-                }))
-                : getDefaultInputsForTaskType(c.task_type || ""),
             allowedSourceTypes: dataCollectionCfg.allowed_source_types || initialForm.dataCollection.allowedSourceTypes,
             requireProvenance: dataCollectionCfg.require_public_source_provenance ?? true,
             annotatorsPerInstance: dataCollectionCfg.annotators_per_instance ?? 2,
@@ -425,39 +437,6 @@ function mapCompetitionToForm(c) {
         validationDate: c.validation_date || "",
         freezeDate: c.freeze_date || "",
     };
-}
-
-// ── Serialize taskConfig for API payload ──────────────────────────────────────
-function serializeTaskConfig(taskType, taskConfig) {
-    if (!taskConfig) return {};
-    const cfg = { ...taskConfig };
-
-    // Strip empty strings from every array field so blank textarea lines are never persisted
-    Object.keys(cfg).forEach((k) => {
-        if (Array.isArray(cfg[k])) {
-            cfg[k] = cfg[k].filter((v) => typeof v === "string" ? v.trim() : v != null);
-        }
-    });
-
-    // Convert glossary_raw ("EN term → AR term" lines) to [{src, tgt}] array
-    if (taskType === "TRANSLATION" && typeof cfg.glossary_raw === "string") {
-        cfg.glossary = cfg.glossary_raw
-            .split("\n")
-            .map((l) => l.trim())
-            .filter(Boolean)
-            .map((l) => {
-                const [src, tgt] = l.split("→").map((s) => s.trim());
-                return { src: src || l, tgt: tgt || "" };
-            });
-        delete cfg.glossary_raw;
-    }
-
-    // Convert prompts from string (textarea) to array if needed
-    if (typeof cfg.prompts === "string") {
-        cfg.prompts = cfg.prompts.split("\n").map((s) => s.trim()).filter(Boolean);
-    }
-
-    return cfg;
 }
 
 function CreateCompetition({ editMode = false }) {
@@ -497,7 +476,8 @@ function CreateCompetition({ editMode = false }) {
 
         const competitionFromState = location.state?.competition;
 
-        if (competitionFromState) {
+        // The list view's payload has no assets/tasks — fetch the full record then.
+        if (competitionFromState && Array.isArray(competitionFromState.assets)) {
             setForm(mapCompetitionToForm(competitionFromState));
             setLoadingEditData(false);
             return;
@@ -590,47 +570,207 @@ function CreateCompetition({ editMode = false }) {
     const updateField = (field, value) => {
         setForm((prev) => {
             const next = { ...prev, [field]: value };
-            // When task type changes, reset taskConfig to the new task's defaults
-            // and re-derive the Data Collection input shape. Moving between the
-            // two flexible types (MULTI_TASK_ANNOTATION <-> CUSTOM) keeps
-            // whatever inputs the organizer already defined.
-            if (field === "taskType") {
-                next.taskConfig = getDefaultTaskConfig(value);
-                const stayingFlexible = FLEXIBLE_TASK_TYPES.includes(prev.taskType) && FLEXIBLE_TASK_TYPES.includes(value);
-                next.dataCollection = {
-                    ...prev.dataCollection,
-                    inputs: stayingFlexible ? prev.dataCollection.inputs : getDefaultInputsForTaskType(value),
-                };
-            }
             return next;
         });
         clearFieldError(field);
     };
 
-    const updateTaskConfig = (key, value) => {
+    // ── Registry: asset types, task types and their option schemas ────────────
+    const [registry, setRegistry] = useState(null);
+    const [registryError, setRegistryError] = useState("");
+    const seededAssets = useRef(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const token = await getFreshToken();
+                if (!token) return;
+                const res = await fetch("http://127.0.0.1:8000/competition-schema", {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || "Could not load asset and task types");
+                if (!cancelled) setRegistry(data);
+            } catch (e) {
+                if (!cancelled) setRegistryError(e.message || "Could not load asset and task types");
+            }
+        })();
+        return () => { cancelled = true; };
+    }, []);
+
+    // New competitions start with one Text asset so the step is never empty.
+    useEffect(() => {
+        if (!registry || isEditMode || seededAssets.current) return;
+        seededAssets.current = true;
+        setForm((prev) => {
+            if (prev.assets.length) return prev;
+            const spec = registry.asset_types.find((a) => a.value === "TEXT") || registry.asset_types[0];
+            if (!spec) return prev;
+            return { ...prev, assets: [{
+                id: "text_1", key: "text_1", name: spec.label, type: spec.value,
+                required: true, constraints: defaultsFromFields(spec.fields),
+            }] };
+        });
+    }, [registry, isEditMode]);
+
+    const assetSpec = (type) => registry?.asset_types.find((a) => a.value === type);
+    const taskSpec = (type) => registry?.task_types.find((t) => t.value === type);
+
+    // Everything a task of this type may legally target, given the current
+    // assets and the other tasks. Invalid choices (wrong kind of data, or ones
+    // that would create a circular dependency) are simply not offered.
+    const targetOptionsFor = (task, taskType = task.type, tasks = form.tasks, assets = form.assets) => {
+        const spec = taskSpec(taskType);
+        if (!spec) return [];
+        const accepts = spec.accepts;
+        const opts = [];
+        assets.forEach((a) => {
+            const kind = assetSpec(a.type)?.kind;
+            if (accepts.includes(kind)) opts.push({ value: `ASSET:${a.key}`, label: `Asset · ${a.name || a.key}` });
+        });
+        if (accepts.includes("sample")) opts.push({ value: "SAMPLE:", label: "Whole sample" });
+        tasks.forEach((o) => {
+            if (o.key === task.key) return;
+            const produces = taskSpec(o.type)?.produces;
+            if (accepts.includes(produces) && !dependsTransitively(tasks, o.key, task.key))
+                opts.push({ value: `TASK_OUTPUT:${o.key}`, label: `Output of · ${o.name || o.key}` });
+        });
+        return opts;
+    };
+
+    const uniqueName = (base, names) => {
+        let name = base, n = 2;
+        while (names.some((x) => (x || "").trim().toLowerCase() === name.toLowerCase())) name = `${base} ${n++}`;
+        return name;
+    };
+
+    // ── Asset handlers ────────────────────────────────────────────────────────
+    const addAsset = (type) => {
+        const spec = assetSpec(type);
+        if (!spec) return;
+        setForm((prev) => {
+            const key = nextKey(type.toLowerCase(), prev.assets.map((a) => a.key));
+            return { ...prev, assets: [...prev.assets, {
+                id: key, key, name: uniqueName(spec.label, prev.assets.map((a) => a.name)),
+                type, required: true, constraints: defaultsFromFields(spec.fields),
+            }] };
+        });
+        clearFieldError("assets");
+    };
+
+    const updateAsset = (id, patch) => {
+        setForm((prev) => ({ ...prev, assets: prev.assets.map((a) => (a.id === id ? { ...a, ...patch } : a)) }));
+        clearFieldError(`asset-${id}`);
+    };
+
+    const changeAssetType = (id, type) => {
+        const spec = assetSpec(type);
+        updateAsset(id, { type, constraints: defaultsFromFields(spec?.fields) });
+    };
+
+    const updateAssetConstraint = (id, key, value) => {
         setForm((prev) => ({
             ...prev,
-            taskConfig: { ...prev.taskConfig, [key]: value },
+            assets: prev.assets.map((a) => (a.id === id ? { ...a, constraints: { ...a.constraints, [key]: value } } : a)),
+        }));
+        clearFieldError(`assetField-${id}-${key}`);
+    };
+
+    const removeAsset = (id) => {
+        setForm((prev) => {
+            const gone = prev.assets.find((a) => a.id === id);
+            return {
+                ...prev,
+                assets: prev.assets.filter((a) => a.id !== id),
+                // tasks that targeted this asset lose their target and must be re-pointed
+                tasks: prev.tasks.map((t) =>
+                    t.targetType === "ASSET" && t.targetRef === gone?.key ? { ...t, targetType: "", targetRef: "" } : t
+                ),
+            };
+        });
+    };
+
+    // ── Task handlers ─────────────────────────────────────────────────────────
+    // The type is picked inside each task card; a new task starts as the first type.
+    const addTask = (type = registry?.task_types[0]?.value) => {
+        const spec = taskSpec(type);
+        if (!spec) return;
+        setForm((prev) => {
+            const key = nextKey(type.toLowerCase(), prev.tasks.map((t) => t.key));
+            const draft = { key, type };
+            const first = targetOptionsFor(draft, type, prev.tasks, prev.assets)[0];
+            const [targetType, targetRef] = first ? first.value.split(":") : ["", ""];
+            return { ...prev, tasks: [...prev.tasks, {
+                id: key, key, name: uniqueName(spec.label, prev.tasks.map((t) => t.name)),
+                type, targetType, targetRef, dependsOn: [],
+                config: defaultsFromFields(spec.fields), instructions: "",
+            }] };
+        });
+        clearFieldError("tasks");
+    };
+
+    const updateTask = (id, patch) => {
+        setForm((prev) => ({ ...prev, tasks: prev.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
+        clearFieldError(`task-${id}`);
+        clearFieldError(`taskTarget-${id}`);
+    };
+
+    const changeTaskType = (id, type) => {
+        const spec = taskSpec(type);
+        setForm((prev) => ({
+            ...prev,
+            tasks: prev.tasks.map((t) => {
+                if (t.id !== id) return t;
+                const stillValid = targetOptionsFor(t, type, prev.tasks, prev.assets)
+                    .some((o) => o.value === `${t.targetType}:${t.targetRef || ""}`);
+                return {
+                    ...t, type, config: defaultsFromFields(spec?.fields),
+                    ...(stillValid ? {} : { targetType: "", targetRef: "" }),
+                };
+            }),
         }));
     };
 
-    // ── Multi-task / multimodal annotation config helpers ──────────────────────
-    const addAnnotationTask = () => {
-        const tasks = Array.isArray(form.taskConfig.tasks) ? form.taskConfig.tasks : [];
-        updateTaskConfig("tasks", [
-            ...tasks,
-            { id: Date.now(), name: "", type: "single_label", labels: ["Label A", "Label B"] },
-        ]);
+    const setTaskTarget = (id, value) => {
+        const [targetType, targetRef] = value ? value.split(":") : ["", ""];
+        updateTask(id, { targetType, targetRef: targetRef || "" });
     };
 
-    const updateAnnotationTask = (id, field, value) => {
-        const tasks = Array.isArray(form.taskConfig.tasks) ? form.taskConfig.tasks : [];
-        updateTaskConfig("tasks", tasks.map((t) => (t.id === id ? { ...t, [field]: value } : t)));
+    const toggleTaskDependency = (id, depKey) => {
+        setForm((prev) => ({
+            ...prev,
+            tasks: prev.tasks.map((t) => {
+                if (t.id !== id) return t;
+                const has = t.dependsOn.includes(depKey);
+                return { ...t, dependsOn: has ? t.dependsOn.filter((d) => d !== depKey) : [...t.dependsOn, depKey] };
+            }),
+        }));
     };
 
-    const removeAnnotationTask = (id) => {
-        const tasks = Array.isArray(form.taskConfig.tasks) ? form.taskConfig.tasks : [];
-        updateTaskConfig("tasks", tasks.filter((t) => t.id !== id));
+    const updateTaskConfigField = (id, key, value) => {
+        setForm((prev) => ({
+            ...prev,
+            tasks: prev.tasks.map((t) => (t.id === id ? { ...t, config: { ...t.config, [key]: value } } : t)),
+        }));
+        clearFieldError(`taskField-${id}-${key}`);
+    };
+
+    const removeTask = (id) => {
+        setForm((prev) => {
+            const gone = prev.tasks.find((t) => t.id === id);
+            return {
+                ...prev,
+                tasks: prev.tasks
+                    .filter((t) => t.id !== id)
+                    .map((t) => ({
+                        ...t,
+                        dependsOn: t.dependsOn.filter((d) => d !== gone?.key),
+                        ...(t.targetType === "TASK_OUTPUT" && t.targetRef === gone?.key
+                            ? { targetType: "", targetRef: "" } : {}),
+                    })),
+            };
+        });
     };
 
     const updateDataCollection = (field, value) => {
@@ -638,31 +778,6 @@ function CreateCompetition({ editMode = false }) {
             ...prev,
             dataCollection: { ...prev.dataCollection, [field]: value },
         }));
-    };
-
-    const addInput = () => {
-        const inputs = Array.isArray(form.dataCollection.inputs) ? form.dataCollection.inputs : [];
-        updateDataCollection("inputs", [
-            ...inputs,
-            { id: Date.now(), name: "", modality: "text", maxLength: 50, locked: false },
-        ]);
-    };
-
-    const updateInput = (id, field, value) => {
-        const inputs = Array.isArray(form.dataCollection.inputs) ? form.dataCollection.inputs : [];
-        updateDataCollection("inputs", inputs.map((inp) => {
-            if (inp.id !== id) return inp;
-            const next = { ...inp, [field]: value };
-            // Switching an input's modality resets its length limit to a
-            // sensible default for the new kind (words vs. seconds).
-            if (field === "modality") next.maxLength = value === "audio" ? 10 : 50;
-            return next;
-        }));
-    };
-
-    const removeInput = (id) => {
-        const inputs = Array.isArray(form.dataCollection.inputs) ? form.dataCollection.inputs : [];
-        updateDataCollection("inputs", inputs.filter((inp) => inp.id !== id));
     };
 
     const toggleSourceType = (value) => {
@@ -745,8 +860,6 @@ function CreateCompetition({ editMode = false }) {
         if (key === "basic") {
             if (!form.competitionName.trim())
                 nextErrors.competitionName = "Competition name is required.";
-            if (!form.taskType)
-                nextErrors.taskType = "Task type is required.";
             if (!form.description.trim())
                 nextErrors.description = "Description is required.";
             if (form.startDate && form.endDate && new Date(form.endDate) < new Date(form.startDate))
@@ -755,50 +868,64 @@ function CreateCompetition({ editMode = false }) {
                 nextErrors.prizePool = "Prize pool cannot be negative.";
         }
 
-        // Task Config — validate audio tasks have at least one prompt, and that
-        // multi-task/multimodal competitions have a usable configuration.
-        if (key === "taskConfig") {
-            const audioPromptTasks = ["AUDIO_SYNTHESIS", "SPEECH_EMOTION"];
-            if (audioPromptTasks.includes(form.taskType)) {
-                const prompts = Array.isArray(form.taskConfig.prompts)
-                    ? form.taskConfig.prompts
-                    : (form.taskConfig.prompts || "").split("\n").filter(Boolean);
-                if (!prompts.length)
-                    nextErrors.prompts = "At least one prompt sentence is required for this task type.";
-            }
-
-            if (FLEXIBLE_TASK_TYPES.includes(form.taskType)) {
-                const tasks = Array.isArray(form.taskConfig.tasks) ? form.taskConfig.tasks : [];
-                if (!tasks.length)
-                    nextErrors.tasks = "Define at least one annotation task.";
-                tasks.forEach((t) => {
-                    if (!t.name || !t.name.trim())
-                        nextErrors[`task-${t.id}`] = "Every task needs a name.";
-                    const labels = Array.isArray(t.labels) ? t.labels.filter((l) => l && l.trim()) : [];
-                    const minLabels = t.type === "span" ? 1 : 2;
-                    if (labels.length < minLabels)
-                        nextErrors[`taskLabels-${t.id}`] = t.type === "span"
-                            ? "Define at least one entity type."
-                            : "Every task needs at least two labels.";
+        // Sample Assets — at least one; unique names; constraints valid per type.
+        if (key === "assets") {
+            if (!registry) {
+                nextErrors.assets = registryError || "Asset types are still loading — try again in a moment.";
+            } else {
+                if (!form.assets.length) nextErrors.assets = "Add at least one asset to the sample.";
+                const seen = new Set();
+                form.assets.forEach((a) => {
+                    const name = (a.name || "").trim();
+                    if (!name) nextErrors[`asset-${a.id}`] = "Every asset needs a name.";
+                    else if (seen.has(name.toLowerCase())) nextErrors[`asset-${a.id}`] = `Another asset is already called "${name}".`;
+                    seen.add(name.toLowerCase());
+                    validateFieldValues(assetSpec(a.type)?.fields || [], a.constraints, `assetField-${a.id}`, nextErrors, name || "Asset");
+                    const c = a.constraints || {};
+                    if (c.min_words !== undefined && c.max_words !== undefined && c.min_words !== "" && c.max_words !== "" && Number(c.min_words) > Number(c.max_words))
+                        nextErrors[`assetField-${a.id}-min_words`] = "Minimum words cannot exceed maximum words.";
+                    if (c.min_duration_seconds !== undefined && c.max_duration_seconds !== undefined && c.min_duration_seconds !== "" && c.max_duration_seconds !== "" && Number(c.min_duration_seconds) > Number(c.max_duration_seconds))
+                        nextErrors[`assetField-${a.id}-min_duration_seconds`] = "Minimum duration cannot exceed maximum duration.";
                 });
             }
         }
 
-        // Data Collection — independent of task type: applies whenever
-        // contributors source their own raw data.
+        // Tasks — each has a valid target, valid config, and no circular dependency.
+        if (key === "tasks") {
+            if (!registry) {
+                nextErrors.tasks = registryError || "Task types are still loading — try again in a moment.";
+            } else {
+                if (!form.tasks.length) nextErrors.tasks = "Add at least one task.";
+                const seen = new Set();
+                form.tasks.forEach((t) => {
+                    const name = (t.name || "").trim();
+                    if (!name) nextErrors[`task-${t.id}`] = "Every task needs a name.";
+                    else if (seen.has(name.toLowerCase())) nextErrors[`task-${t.id}`] = `Another task is already called "${name}".`;
+                    seen.add(name.toLowerCase());
+
+                    const valid = targetOptionsFor(t).some((o) => o.value === `${t.targetType}:${t.targetRef || ""}`);
+                    if (!t.targetType) nextErrors[`taskTarget-${t.id}`] = "Choose what this task applies to.";
+                    else if (!valid) nextErrors[`taskTarget-${t.id}`] = "This target no longer exists or is not compatible with this task type.";
+
+                    validateFieldValues(taskSpec(t.type)?.fields || [], t.config, `taskField-${t.id}`, nextErrors, name || "Task");
+                    const c = t.config || {};
+                    if (c.multi_label && c.min_labels !== undefined && c.max_labels !== undefined && c.min_labels !== "" && c.max_labels !== "" && Number(c.min_labels) > Number(c.max_labels))
+                        nextErrors[`taskField-${t.id}-min_labels`] = "Minimum labels cannot exceed maximum labels.";
+                    if (c.min_words !== undefined && c.max_words !== undefined && c.min_words !== "" && c.max_words !== "" && Number(c.min_words) > Number(c.max_words))
+                        nextErrors[`taskField-${t.id}-min_words`] = "Minimum words cannot exceed maximum words.";
+                });
+                const cycle = findTaskCycle(form.tasks);
+                if (cycle) {
+                    const nameOf = (k) => form.tasks.find((t) => t.key === k)?.name || k;
+                    nextErrors.tasks = `Circular task dependency: ${cycle.map(nameOf).join(" → ")}`;
+                }
+            }
+        }
+
+        // Data Collection — a contributed instance is a sample, so its inputs
+        // are the Sample Assets (nothing to validate for them here).
         if (key === "dataCollection") {
             const dc = form.dataCollection;
-            const inputs = Array.isArray(dc.inputs) ? dc.inputs : [];
-            if (!inputs.length)
-                nextErrors.inputs = "Define at least one input.";
-            inputs.forEach((inp) => {
-                if (!inp.name || !inp.name.trim())
-                    nextErrors[`inputName-${inp.id}`] = "Every input needs a name.";
-                if (!inp.maxLength || Number(inp.maxLength) <= 0)
-                    nextErrors[`inputLength-${inp.id}`] = inp.modality === "audio"
-                        ? "Set a positive maximum length in seconds."
-                        : "Set a positive maximum length in words.";
-            });
             if (!Array.isArray(dc.allowedSourceTypes) || !dc.allowedSourceTypes.length)
                 nextErrors.allowedSourceTypes = "Select at least one allowed data source.";
             if (!dc.annotatorsPerInstance || Number(dc.annotatorsPerInstance) < 1)
@@ -885,11 +1012,13 @@ function CreateCompetition({ editMode = false }) {
     };
 
     const buildPayload = () => {
-        const taskConfig = serializeTaskConfig(form.taskType, form.taskConfig);
+        const taskConfig = {};
+        const promptLines = listFromValue(form.prompts);
+        if (promptLines.length) taskConfig.prompts = promptLines;
 
         // Each capability rides as its own flat key inside task_config (which
         // is stored as the competition's dataset_config JSON) — independent of
-        // each other and of the per-task annotation config above.
+        // each other. (Assets and tasks are sent separately, below.)
         if (form.tracksEnabled) {
             taskConfig.tracks_enabled = true;
             taskConfig.tracks = form.tracks.map((t) => ({
@@ -911,11 +1040,6 @@ function CreateCompetition({ editMode = false }) {
         if (form.participantSourcedData) {
             taskConfig.data_collection_enabled = true;
             taskConfig.data_collection = {
-                inputs: form.dataCollection.inputs.map((inp) => ({
-                    name: inp.name.trim(),
-                    modality: inp.modality,
-                    max_length: Number(inp.maxLength) || null,
-                })),
                 allowed_source_types: form.dataCollection.allowedSourceTypes,
                 require_public_source_provenance: !!form.dataCollection.requireProvenance,
                 annotators_per_instance: Number(form.dataCollection.annotatorsPerInstance) || 1,
@@ -939,7 +1063,23 @@ function CreateCompetition({ editMode = false }) {
 
         return {
             competition_name: form.competitionName,
-            task_type: form.taskType,
+            // No competition type: a competition is its assets + tasks.
+            assets: form.assets.map((a) => ({
+                key: a.key,
+                name: a.name.trim(),
+                type: a.type,
+                required: a.required,
+                constraints: serializeFieldValues(assetSpec(a.type)?.fields || [], a.constraints),
+            })),
+            tasks: form.tasks.map((t) => ({
+                key: t.key,
+                name: t.name.trim(),
+                type: t.type,
+                target: { type: t.targetType, ref: t.targetType === "SAMPLE" ? null : (t.targetRef || null) },
+                config: serializeFieldValues(taskSpec(t.type)?.fields || [], t.config),
+                depends_on: t.dependsOn,
+                instructions: t.instructions.trim() || null,
+            })),
             description: form.description,
             start_date: form.startDate || null,
             end_date: form.endDate || null,
@@ -967,7 +1107,7 @@ function CreateCompetition({ editMode = false }) {
             validation_date: form.phasesEnabled ? null : (form.validationDate || null),
             freeze_date: form.phasesEnabled ? null : (form.freezeDate || null),
 
-            // Task-specific annotation config, plus whichever independent
+            // Whichever independent
             // capabilities (tracks / phases / data collection) are turned on.
             task_config: taskConfig,
             join_method: form.joinMethod || "auto",
@@ -1084,21 +1224,6 @@ function CreateCompetition({ editMode = false }) {
                     onChange={(e) => updateField("competitionName", e.target.value)}
                 />
                 <ErrorMessage name="competitionName" />
-            </div>
-
-            <div className="create-section">
-                <label>Task Type <span className="required-star">*</span></label>
-                <select
-                    className={errors.taskType ? "input-error" : ""}
-                    value={form.taskType}
-                    onChange={(e) => updateField("taskType", e.target.value)}
-                >
-                    <option value="">Select task type</option>
-                    {taskTypes.map((t) => (
-                        <option key={t.value} value={t.value}>{t.label}</option>
-                    ))}
-                </select>
-                <ErrorMessage name="taskType" />
             </div>
 
             <div className="create-section">
@@ -1219,495 +1344,327 @@ function CreateCompetition({ editMode = false }) {
         </div>
     );
 
-    // ── Task Config step ───────────────────────────────────────────────────────
-    const renderTaskConfig = () => {
-        const taskType = form.taskType;
-        const cfg = form.taskConfig;
+    // ── Generic option form, driven by the registry's field specs ──────────────
+    const renderFields = (fields, values, onChange, errKey) => (
+        <div className="create-two-col">
+            {fields.filter((f) => isFieldVisible(f, fields, values)).map((f) => {
+                const v = values?.[f.key];
+                const errName = `${errKey}-${f.key}`;
+                const wide = f.type === "string_list" || f.type === "multi_select" || f.type === "text";
+                const label = <label>{f.label}{f.required && <span className="required-star"> *</span>}</label>;
+                let control;
+                if (f.type === "boolean") {
+                    control = (
+                        <label className="switch">
+                            <input type="checkbox" checked={!!v} onChange={(e) => onChange(f.key, e.target.checked)} />
+                            <span className="slider"></span>
+                        </label>
+                    );
+                } else if (f.type === "select") {
+                    control = (
+                        <select value={v ?? ""} onChange={(e) => onChange(f.key, e.target.value)}>
+                            {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                    );
+                } else if (f.type === "multi_select") {
+                    const cur = Array.isArray(v) ? v : [];
+                    control = (
+                        <div className="tc-radio-group">
+                            {f.options.map((o) => {
+                                const on = cur.includes(o);
+                                return (
+                                    <label key={o} className={`tc-radio-option ${on ? "selected" : ""}`}>
+                                        <input type="checkbox" checked={on}
+                                            onChange={() => onChange(f.key, on ? cur.filter((x) => x !== o) : [...cur, o])} />
+                                        <div><strong>{o}</strong></div>
+                                    </label>
+                                );
+                            })}
+                        </div>
+                    );
+                } else if (f.type === "string_list" || f.type === "text") {
+                    control = (
+                        <textarea
+                            rows={4}
+                            className={errors[errName] ? "input-error" : ""}
+                            placeholder={f.help || ""}
+                            value={Array.isArray(v) ? v.join("\n") : (v ?? "")}
+                            onChange={(e) => onChange(f.key, e.target.value)}
+                        />
+                    );
+                } else if (f.type === "integer" || f.type === "number") {
+                    control = (
+                        <input type="number" className={errors[errName] ? "input-error" : ""}
+                            min={f.min} max={f.max} step={f.type === "integer" ? 1 : "any"}
+                            placeholder={f.placeholder || ""} value={v ?? ""}
+                            onChange={(e) => onChange(f.key, e.target.value)} />
+                    );
+                } else {
+                    control = (
+                        <input type="text" className={errors[errName] ? "input-error" : ""}
+                            placeholder={f.placeholder || ""} value={v ?? ""}
+                            onChange={(e) => onChange(f.key, e.target.value)} />
+                    );
+                }
+                return (
+                    <div key={f.key} className="create-section" style={wide ? { gridColumn: "1 / -1" } : undefined}>
+                        {label}
+                        {control}
+                        {f.help && f.type !== "string_list" && f.type !== "text" && (
+                            <p className="create-card-subtitle" style={{ margin: "4px 0 0" }}>{f.help}</p>
+                        )}
+                        <ErrorMessage name={errName} />
+                    </div>
+                );
+            })}
+        </div>
+    );
 
-        // Converts an array → newline-separated string for textarea
-        const asText = (key, defaultLines = []) => {
-            const val = cfg[key];
-            if (Array.isArray(val)) return val.join("\n");
-            if (typeof val === "string") return val;
-            return defaultLines.join("\n");
-        };
+    const monoBox = {
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 13,
+        whiteSpace: "pre", padding: "10px 14px", borderRadius: 8,
+        background: "rgba(127,127,127,0.10)", overflowX: "auto", margin: "0 0 16px",
+    };
 
-        // Saves newline-separated textarea back as array, dropping blank lines
-        const onTextareaLines = (key) => (e) =>
-            updateTaskConfig(key, e.target.value.split("\n").map((s) => s.trimEnd()).filter(Boolean));
-
-        if (!taskType) {
+    // ── Sample Assets step ────────────────────────────────────────────────────
+    const renderAssets = () => {
+        if (!registry) {
             return (
                 <div className="create-card">
-                    <div className="tc-empty">
-                        <span className="tc-empty-icon">↑</span>
-                        <p>Select a Task Type in Step 1 to configure annotation settings.</p>
-                    </div>
+                    <p className="create-card-subtitle">{registryError || "Loading asset types…"}</p>
+                    <ErrorMessage name="assets" />
                 </div>
             );
         }
+        const tree = form.assets.length
+            ? "Sample\n" + form.assets.map((a, i) => `${i === form.assets.length - 1 ? "└──" : "├──"} ${a.name || "(unnamed)"}  [${a.type}]`).join("\n")
+            : "Sample\n(no assets yet)";
 
         return (
             <div className="create-card">
-                <h3 className="create-card-title">Task Configuration</h3>
-                <p className="create-card-subtitle">
-                    These settings are shown to contributors in the Data Collection widget.
-                    Defaults are pre-filled — edit them to match your dataset's scope.
-                </p>
-
-                {/* ── TEXT_CLASSIFICATION ──────────────────────────── */}
-                {taskType === "TEXT_CLASSIFICATION" && (
-                    <>
-                        <div className="create-section">
-                            <label>Classification Labels <span className="required-star">*</span></label>
-                            <textarea
-                                rows={6}
-                                placeholder={"Finance\nTechnology\nHealthcare\n..."}
-                                value={asText("labels", ["Finance", "Technology", "Healthcare"])}
-                                onChange={onTextareaLines("labels")}
-                            />
-                            <small>One label per line. Contributors will choose from these labels when annotating text.</small>
-                        </div>
-                        <div className="create-section">
-                            <label>Instructions for contributors</label>
-                            <textarea
-                                rows={2}
-                                placeholder="Optional guidance shown to contributors in the widget..."
-                                value={cfg.description || ""}
-                                onChange={(e) => updateTaskConfig("description", e.target.value)}
-                            />
-                        </div>
-                    </>
-                )}
-
-                {/* ── NER ──────────────────────────────────────────── */}
-                {taskType === "NER" && (
-                    <>
-                        <div className="create-section">
-                            <label>Entity Types <span className="required-star">*</span></label>
-                            <textarea
-                                rows={5}
-                                placeholder={"PER\nORG\nLOC\nDATE\n..."}
-                                value={asText("entity_types", ["PER", "ORG", "LOC", "MISC"])}
-                                onChange={onTextareaLines("entity_types")}
-                            />
-                            <small>One entity type per line. Use short uppercase codes (e.g. PER, ORG, LOC).</small>
-                        </div>
-                        <div className="create-section">
-                            <label>Instructions for contributors</label>
-                            <textarea
-                                rows={2}
-                                placeholder="e.g., Only tag proper nouns; do not tag common nouns..."
-                                value={cfg.description || ""}
-                                onChange={(e) => updateTaskConfig("description", e.target.value)}
-                            />
-                        </div>
-                    </>
-                )}
-
-                {/* ── SENTIMENT_ANALYSIS ───────────────────────────── */}
-                {taskType === "SENTIMENT_ANALYSIS" && (
-                    <>
-                        <div className="create-section">
-                            <label>Sentiment Labels <span className="required-star">*</span></label>
-                            <textarea
-                                rows={4}
-                                placeholder={"positive\nnegative\nneutral\nmixed"}
-                                value={asText("sentiment_labels", ["positive", "negative", "neutral", "mixed"])}
-                                onChange={onTextareaLines("sentiment_labels")}
-                            />
-                            <small>One label per line. These appear as clickable sentiment buttons.</small>
-                        </div>
-                        <div className="create-section">
-                            <label>Aspect Categories</label>
-                            <textarea
-                                rows={4}
-                                placeholder={"product\nservice\nprice\ndelivery"}
-                                value={asText("aspect_categories", ["product", "service", "price", "delivery"])}
-                                onChange={onTextareaLines("aspect_categories")}
-                            />
-                            <small>Optional. One aspect per line for fine-grained annotation. Leave blank to disable aspect annotation.</small>
-                        </div>
-                    </>
-                )}
-
-                {/* ── TRANSLATION ──────────────────────────────────── */}
-                {taskType === "TRANSLATION" && (
-                    <>
-                        <div className="create-two-col">
-                            <div className="create-section">
-                                <label>Source Language <span className="required-star">*</span></label>
-                                <input
-                                    type="text"
-                                    placeholder="EN"
-                                    maxLength={10}
-                                    value={cfg.source_lang || "EN"}
-                                    onChange={(e) => updateTaskConfig("source_lang", e.target.value.toUpperCase())}
-                                />
-                                <small>ISO 639-1 code (e.g. EN, FR, ZH)</small>
-                            </div>
-                            <div className="create-section">
-                                <label>Target Language <span className="required-star">*</span></label>
-                                <input
-                                    type="text"
-                                    placeholder="AR"
-                                    maxLength={10}
-                                    value={cfg.target_lang || "AR"}
-                                    onChange={(e) => updateTaskConfig("target_lang", e.target.value.toUpperCase())}
-                                />
-                                <small>ISO 639-1 code (e.g. AR, DE, JA)</small>
-                            </div>
-                        </div>
-                        <div className="create-section">
-                            <label>Glossary Terms</label>
-                            <textarea
-                                rows={5}
-                                placeholder={"machine learning → تعلم الآلة\nneural network → شبكة عصبية"}
-                                value={cfg.glossary_raw || ""}
-                                onChange={(e) => updateTaskConfig("glossary_raw", e.target.value)}
-                            />
-                            <small>Optional. One entry per line in format: <code>source term → target term</code>. Shown as hints to contributors.</small>
-                        </div>
-                    </>
-                )}
-
-                {/* ── QUESTION_ANSWERING ───────────────────────────── */}
-                {taskType === "QUESTION_ANSWERING" && (
-                    <>
-                        <div className="create-section">
-                            <label>QA Mode <span className="required-star">*</span></label>
-                            <div className="tc-radio-group">
-                                {[
-                                    { value: "extractive", label: "Extractive", desc: "Answers must be exact spans copied from the context passage." },
-                                    { value: "generative", label: "Generative", desc: "Contributors write answers freely in their own words." },
-                                ].map((opt) => (
-                                    <label key={opt.value} className={`tc-radio-option ${cfg.qa_type === opt.value ? "selected" : ""}`}>
-                                        <input
-                                            type="radio"
-                                            name="qa_type"
-                                            value={opt.value}
-                                            checked={cfg.qa_type === opt.value}
-                                            onChange={() => updateTaskConfig("qa_type", opt.value)}
-                                        />
-                                        <div>
-                                            <strong>{opt.label}</strong>
-                                            <span>{opt.desc}</span>
-                                        </div>
-                                    </label>
-                                ))}
-                            </div>
-                        </div>
-                        <div className="create-section">
-                            <label>Instructions for contributors</label>
-                            <textarea
-                                rows={2}
-                                placeholder="e.g., Write questions that can only be answered from the passage provided..."
-                                value={cfg.description || ""}
-                                onChange={(e) => updateTaskConfig("description", e.target.value)}
-                            />
-                        </div>
-                    </>
-                )}
-
-                {/* ── SUMMARIZATION ────────────────────────────────── */}
-                {taskType === "SUMMARIZATION" && (
-                    <>
-                        <div className="create-three-col">
-                            <div className="create-section">
-                                <label>Target Compression Ratio</label>
-                                <input
-                                    type="number"
-                                    step="0.01" min="0.01" max="1"
-                                    placeholder="0.10"
-                                    value={cfg.target_ratio ?? 0.1}
-                                    onChange={(e) => updateTaskConfig("target_ratio", parseFloat(e.target.value) || 0.1)}
-                                />
-                                <small>Target summary length as fraction of source (0.10 = 10%)</small>
-                            </div>
-                            <div className="create-section">
-                                <label>Maximum Ratio</label>
-                                <input
-                                    type="number"
-                                    step="0.01" min="0.01" max="1"
-                                    placeholder="0.15"
-                                    value={cfg.max_ratio ?? 0.15}
-                                    onChange={(e) => updateTaskConfig("max_ratio", parseFloat(e.target.value) || 0.15)}
-                                />
-                                <small>Hard cap — summaries above this ratio are flagged.</small>
-                            </div>
-                            <div className="create-section">
-                                <label>Minimum Words</label>
-                                <input
-                                    type="number"
-                                    min="1"
-                                    placeholder="20"
-                                    value={cfg.min_summary_words ?? 20}
-                                    onChange={(e) => updateTaskConfig("min_summary_words", parseInt(e.target.value, 10) || 20)}
-                                />
-                                <small>Floor for summary word count regardless of ratio.</small>
-                            </div>
-                        </div>
-                        <div className="create-section">
-                            <label>Instructions for contributors</label>
-                            <textarea
-                                rows={2}
-                                placeholder="e.g., Preserve factual accuracy; do not introduce information not in the source..."
-                                value={cfg.description || ""}
-                                onChange={(e) => updateTaskConfig("description", e.target.value)}
-                            />
-                        </div>
-                    </>
-                )}
-
-                {/* ── AUDIO_SYNTHESIS ─────────────────────────────── */}
-                {taskType === "AUDIO_SYNTHESIS" && (
-                    <>
-                        <div className="create-section">
-                            <label>
-                                Reading Prompts <span className="required-star">*</span>
-                                <span style={{ fontWeight: 400, color: "#6f778c", marginLeft: 8 }}>
-                                    — contributors read these aloud
-                                </span>
-                            </label>
-                            <textarea
-                                rows={10}
-                                className={errors.prompts ? "input-error" : ""}
-                                placeholder={"The geometric precision of the algorithm allows for instantaneous detection of phonetic anomalies.\nShe sold seashells by the seashore on a warm summer afternoon.\nThe quick brown fox jumps over the lazy dog near the old mill."}
-                                value={Array.isArray(cfg.prompts) ? cfg.prompts.join("\n") : (cfg.prompts || "")}
-                                onChange={(e) => updateTaskConfig("prompts", e.target.value.split("\n").map((s) => s.trimEnd()))}
-                            />
-                            <small>
-                                One sentence per line. Each submission uses the next prompt in rotation.
-                                {Array.isArray(cfg.prompts) ? ` — ${cfg.prompts.filter(Boolean).length} prompt(s) defined` : ""}
-                            </small>
-                            <ErrorMessage name="prompts" />
-                        </div>
-                        <div className="create-section">
-                            <label>Instructions for contributors</label>
-                            <textarea
-                                rows={2}
-                                placeholder="e.g., Read clearly at a natural pace; avoid background noise..."
-                                value={cfg.description || ""}
-                                onChange={(e) => updateTaskConfig("description", e.target.value)}
-                            />
-                        </div>
-                    </>
-                )}
-
-                {/* ── AUDIO_TRANSCRIPTION ─────────────────────────── */}
-                {taskType === "AUDIO_TRANSCRIPTION" && (
-                    <>
-                        <div className="create-two-col">
-                            <div className="create-section">
-                                <label>Number of Speakers</label>
-                                <input
-                                    type="number" min="1" max="20"
-                                    value={cfg.speakers ?? 1}
-                                    onChange={(e) => updateTaskConfig("speakers", parseInt(e.target.value, 10) || 1)}
-                                />
-                                <small>How many distinct speakers appear in the audio.</small>
-                            </div>
-                            <div className="create-section" style={{ justifyContent: "flex-end" }}>
-                                <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
-                                    <span className="switch">
-                                        <input
-                                            type="checkbox"
-                                            checked={!!cfg.with_timestamps}
-                                            onChange={(e) => updateTaskConfig("with_timestamps", e.target.checked)}
-                                        />
-                                        <span className="slider" />
-                                    </span>
-                                    <div>
-                                        <strong>Require Timestamps</strong>
-                                        <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}>
-                                            Contributors mark times in [MM:SS] format
-                                        </p>
-                                    </div>
-                                </label>
-                            </div>
-                        </div>
-                        <div className="create-section">
-                            <label>Instructions for contributors</label>
-                            <textarea
-                                rows={2}
-                                placeholder="e.g., Include all filler words (uh, um); mark unclear speech with [inaudible]..."
-                                value={cfg.description || ""}
-                                onChange={(e) => updateTaskConfig("description", e.target.value)}
-                            />
-                        </div>
-                    </>
-                )}
-
-                {/* ── SPEECH_EMOTION ──────────────────────────────── */}
-                {taskType === "SPEECH_EMOTION" && (
-                    <>
-                        <div className="create-section">
-                            <label>Emotion Labels <span className="required-star">*</span></label>
-                            <textarea
-                                rows={5}
-                                placeholder={"neutral\nhappy\nsad\nangry\nsurprised"}
-                                value={asText("emotion_labels", ["neutral", "happy", "sad", "angry", "surprised", "fearful"])}
-                                onChange={onTextareaLines("emotion_labels")}
-                            />
-                            <small>One emotion per line. Contributors assign one of these after recording.</small>
-                        </div>
-                        <div className="create-section">
-                            <label>
-                                Utterance Prompts <span className="required-star">*</span>
-                                <span style={{ fontWeight: 400, color: "#6f778c", marginLeft: 8 }}>
-                                    — contributors read these with the target emotion
-                                </span>
-                            </label>
-                            <textarea
-                                rows={8}
-                                className={errors.prompts ? "input-error" : ""}
-                                placeholder={"I can't believe this actually worked out the way I hoped.\nEverything seems to be falling apart today.\nWe finally got the results — they exceeded all expectations."}
-                                value={Array.isArray(cfg.prompts) ? cfg.prompts.join("\n") : (cfg.prompts || "")}
-                                onChange={(e) => updateTaskConfig("prompts", e.target.value.split("\n").map((s) => s.trimEnd()))}
-                            />
-                            <small>
-                                One utterance per line. Should be emotionally ambiguous sentences that
-                                can be delivered in different emotional tones.
-                                {Array.isArray(cfg.prompts) ? ` — ${cfg.prompts.filter(Boolean).length} prompt(s) defined` : ""}
-                            </small>
-                            <ErrorMessage name="prompts" />
-                        </div>
-                    </>
-                )}
-
-                {/* ── AUDIO_EVENT_DETECTION ───────────────────────── */}
-                {taskType === "AUDIO_EVENT_DETECTION" && (
-                    <>
-                        <div className="create-section">
-                            <label>Event Types <span className="required-star">*</span></label>
-                            <textarea
-                                rows={6}
-                                placeholder={"speech\nmusic\nnoise\nsilence\napplause\nalarm"}
-                                value={asText("event_types", ["speech", "music", "noise", "silence", "applause", "alarm"])}
-                                onChange={onTextareaLines("event_types")}
-                            />
-                            <small>One event type per line. Contributors mark segments of audio with these labels.</small>
-                        </div>
-                        <div className="create-section">
-                            <label>Instructions for contributors</label>
-                            <textarea
-                                rows={2}
-                                placeholder="e.g., Mark overlapping events separately; minimum segment length is 0.5s..."
-                                value={cfg.description || ""}
-                                onChange={(e) => updateTaskConfig("description", e.target.value)}
-                            />
-                        </div>
-                    </>
-                )}
-
-                {/* ── MULTI_TASK_ANNOTATION / CUSTOM: define the label sets ── */}
-                {FLEXIBLE_TASK_TYPES.includes(taskType) && (
-                    <>
-                        <div className="section-header-row">
-                            <div>
-                                <h4 style={{ margin: 0 }}>Annotation Tasks</h4>
-                                <p className="create-card-subtitle" style={{ margin: 0 }}>
-                                    Each task gets its own label set (e.g. Sentiment, Sarcasm, Hate Speech)
-                                    and is annotated independently on every instance. Turn on Data
-                                    Collection in Basic Info if contributors will source the raw
-                                    instances themselves.
-                                </p>
-                            </div>
-                            <button type="button" className="soft-action-btn" onClick={addAnnotationTask}>
-                                + Add Task
+                <div className="section-header-row">
+                    <div>
+                        <h3 className="create-card-title" style={{ margin: 0 }}>Sample Assets</h3>
+                        <p className="create-card-subtitle" style={{ margin: 0 }}>
+                            Define what one sample is made of. A sample has one or more assets — add any
+                            number and combination (e.g. two audio clips and a text). Each asset has its own constraints.
+                        </p>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {registry.asset_types.map((t) => (
+                            <button key={t.value} type="button" className="soft-action-btn" onClick={() => addAsset(t.value)}>
+                                + {t.label}
                             </button>
-                        </div>
-                        <ErrorMessage name="tasks" />
+                        ))}
+                    </div>
+                </div>
 
-                        {(cfg.tasks || []).map((task, idx) => (
-                            <div key={task.id} className="inner-panel">
-                                <div className="create-two-col">
-                                    <div className="create-section">
-                                        <label>Task {idx + 1} Name <span className="required-star">*</span></label>
-                                        <input
-                                            className={errors[`task-${task.id}`] ? "input-error" : ""}
-                                            type="text"
-                                            placeholder="e.g., Sentiment"
-                                            value={task.name}
-                                            onChange={(e) => updateAnnotationTask(task.id, "name", e.target.value)}
-                                        />
-                                        <ErrorMessage name={`task-${task.id}`} />
-                                    </div>
-                                    <div className="create-section" style={{ justifyContent: "flex-end" }}>
-                                        <button type="button" className="remove-btn" onClick={() => removeAnnotationTask(task.id)}>
-                                            Remove Task
-                                        </button>
-                                    </div>
+                {form.legacyTaskType && (
+                    <p className="create-card-subtitle" style={{ marginTop: 12 }}>
+                        This competition was created with the old "{form.legacyTaskType}" type, which no longer
+                        exists. Define its assets and tasks here to move it to the new model.
+                    </p>
+                )}
+
+                <ErrorMessage name="assets" />
+                <pre style={monoBox}>{tree}</pre>
+
+                {form.assets.map((asset, idx) => {
+                    const spec = assetSpec(asset.type);
+                    return (
+                        <div key={asset.id} className="inner-panel">
+                            <div className="create-two-col">
+                                <div className="create-section">
+                                    <label>Asset {idx + 1} name <span className="required-star">*</span></label>
+                                    <input type="text" className={errors[`asset-${asset.id}`] ? "input-error" : ""}
+                                        placeholder="e.g., Recording" value={asset.name}
+                                        onChange={(e) => updateAsset(asset.id, { name: e.target.value })} />
+                                    <ErrorMessage name={`asset-${asset.id}`} />
                                 </div>
                                 <div className="create-section">
-                                    <label>Annotation Type <span className="required-star">*</span></label>
+                                    <label>Type</label>
+                                    <select value={asset.type} onChange={(e) => changeAssetType(asset.id, e.target.value)}>
+                                        {registry.asset_types.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                                    </select>
+                                </div>
+                            </div>
+
+                            {spec && renderFields(spec.fields, asset.constraints,
+                                (k, v) => updateAssetConstraint(asset.id, k, v), `assetField-${asset.id}`)}
+
+                            <div className="toggle-row">
+                                <div>
+                                    <strong>Required</strong>
+                                    <p>Every sample must include this asset.</p>
+                                </div>
+                                <label className="switch">
+                                    <input type="checkbox" checked={asset.required}
+                                        onChange={(e) => updateAsset(asset.id, { required: e.target.checked })} />
+                                    <span className="slider"></span>
+                                </label>
+                            </div>
+
+                            {form.assets.length > 1 && (
+                                <div className="create-section" style={{ justifyContent: "flex-end" }}>
+                                    <button type="button" className="remove-btn" onClick={() => removeAsset(asset.id)}>
+                                        Remove asset
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    );
+                })}
+
+                <div className="create-section">
+                    <label>Source prompts (optional)</label>
+                    <textarea rows={4} placeholder="One per line — sentences or texts shown to contributors"
+                        value={form.prompts} onChange={(e) => updateField("prompts", e.target.value)} />
+                </div>
+            </div>
+        );
+    };
+
+    // ── Tasks step ────────────────────────────────────────────────────────────
+    const renderTasks = () => {
+        if (!registry) {
+            return (
+                <div className="create-card">
+                    <p className="create-card-subtitle">{registryError || "Loading task types…"}</p>
+                    <ErrorMessage name="tasks" />
+                </div>
+            );
+        }
+        const labelOf = (t) => {
+            if (t.targetType === "ASSET") return form.assets.find((a) => a.key === t.targetRef)?.name || "?";
+            if (t.targetType === "TASK_OUTPUT") return `output of ${form.tasks.find((x) => x.key === t.targetRef)?.name || "?"}`;
+            if (t.targetType === "SAMPLE") return "whole sample";
+            return "?";
+        };
+        const flow = form.tasks.length
+            ? form.tasks.map((t) => `${t.name || t.key}  ←  ${labelOf(t)}`).join("\n")
+            : "(no tasks yet)";
+
+        return (
+            <div className="create-card">
+                <div className="section-header-row">
+                    <div>
+                        <h3 className="create-card-title" style={{ margin: 0 }}>Tasks</h3>
+                        <p className="create-card-subtitle" style={{ margin: 0 }}>
+                            Define what contributors do on a sample. Each task targets one asset, the whole
+                            sample, or the output of another task (e.g. Transcription → NER).
+                        </p>
+                    </div>
+                    <button type="button" className="soft-action-btn" onClick={() => addTask()}>
+                        + Add Task
+                    </button>
+                </div>
+
+                <ErrorMessage name="tasks" />
+                <pre style={monoBox}>{flow}</pre>
+
+                {form.tasks.map((task, idx) => {
+                    const spec = taskSpec(task.type);
+                    const options = targetOptionsFor(task);
+                    const depCandidates = form.tasks.filter(
+                        (o) => o.key !== task.key && !dependsTransitively(form.tasks, o.key, task.key)
+                    );
+                    const implicit = task.targetType === "TASK_OUTPUT" ? task.targetRef : null;
+                    return (
+                        <div key={task.id} className="inner-panel">
+                            <div className="create-two-col">
+                                <div className="create-section">
+                                    <label>Task {idx + 1} name <span className="required-star">*</span></label>
+                                    <input type="text" className={errors[`task-${task.id}`] ? "input-error" : ""}
+                                        value={task.name} onChange={(e) => updateTask(task.id, { name: e.target.value })} />
+                                    <ErrorMessage name={`task-${task.id}`} />
+                                </div>
+                                <div className="create-section">
+                                    <label>Task type</label>
+                                    <select value={task.type} onChange={(e) => changeTaskType(task.id, e.target.value)}>
+                                        {registry.task_types.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div className="create-section">
+                                <label>Applies to <span className="required-star">*</span></label>
+                                <select className={errors[`taskTarget-${task.id}`] ? "input-error" : ""}
+                                    value={`${task.targetType}:${task.targetRef || ""}`}
+                                    onChange={(e) => setTaskTarget(task.id, e.target.value === ":" ? "" : e.target.value)}>
+                                    <option value=":">Select target…</option>
+                                    {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                </select>
+                                <p className="create-card-subtitle" style={{ margin: "4px 0 0" }}>
+                                    {spec?.description} Accepts: {spec?.accepts.map((a) => (a === "sample" ? "whole sample" : a)).join(", ")}.
+                                </p>
+                                <ErrorMessage name={`taskTarget-${task.id}`} />
+                            </div>
+
+                            {depCandidates.length > 0 && (
+                                <div className="create-section">
+                                    <label>Must wait for (optional)</label>
                                     <div className="tc-radio-group">
-                                        {ANNOTATION_TYPE_OPTIONS.map((opt) => {
-                                            const selected = (task.type || "single_label") === opt.value;
+                                        {depCandidates.map((o) => {
+                                            const forced = implicit === o.key;
+                                            const on = forced || task.dependsOn.includes(o.key);
                                             return (
-                                                <label key={opt.value} className={`tc-radio-option ${selected ? "selected" : ""}`}>
-                                                    <input
-                                                        type="radio"
-                                                        name={`annotationType-${task.id}`}
-                                                        checked={selected}
-                                                        onChange={() => updateAnnotationTask(task.id, "type", opt.value)}
-                                                    />
-                                                    <div>
-                                                        <strong>{opt.label}</strong>
-                                                        <span>{opt.hint}</span>
-                                                    </div>
+                                                <label key={o.key} className={`tc-radio-option ${on ? "selected" : ""}`}
+                                                    title={forced ? "Already required because this task uses its output" : ""}>
+                                                    <input type="checkbox" checked={on} disabled={forced}
+                                                        onChange={() => toggleTaskDependency(task.id, o.key)} />
+                                                    <div><strong>{o.name || o.key}</strong></div>
                                                 </label>
                                             );
                                         })}
                                     </div>
                                 </div>
-                                <div className="create-section">
-                                    <label>
-                                        {task.type === "span" ? "Entity Types" : "Labels"} <span className="required-star">*</span>
-                                    </label>
-                                    <textarea
-                                        rows={3}
-                                        className={errors[`taskLabels-${task.id}`] ? "input-error" : ""}
-                                        placeholder={task.type === "span" ? "PERSON\nORG\nLOCATION\nDATE" : "Positive\nNegative\nNeutral"}
-                                        value={Array.isArray(task.labels) ? task.labels.join("\n") : ""}
-                                        onChange={(e) => updateAnnotationTask(task.id, "labels", e.target.value.split("\n").map((s) => s.trimEnd()))}
-                                    />
-                                    <small>
-                                        {task.type === "span"
-                                            ? "One entity type per line. At least one is required."
-                                            : "One label per line. At least two labels required."}
-                                    </small>
-                                    <ErrorMessage name={`taskLabels-${task.id}`} />
-                                </div>
-                            </div>
-                        ))}
+                            )}
 
-                        {taskType === "CUSTOM" && (
+                            {spec && renderFields(spec.fields, task.config,
+                                (k, v) => updateTaskConfigField(task.id, k, v), `taskField-${task.id}`)}
+
                             <div className="create-section">
-                                <label>Custom Configuration Notes</label>
-                                <textarea
-                                    rows={4}
-                                    placeholder="Anything specific to this competition that doesn't fit the structured fields above — special rules, a scoring nuance, how inputs relate to each other, etc."
-                                    value={cfg.custom_notes || ""}
-                                    onChange={(e) => updateTaskConfig("custom_notes", e.target.value)}
-                                />
-                                <small>Optional. Shown to organizers only, not published to participants.</small>
+                                <label>Instructions for contributors (optional)</label>
+                                <textarea rows={2} value={task.instructions}
+                                    onChange={(e) => updateTask(task.id, { instructions: e.target.value })} />
                             </div>
-                        )}
-                    </>
-                )}
+
+                            <div className="create-section" style={{ justifyContent: "flex-end" }}>
+                                <button type="button" className="remove-btn" onClick={() => removeTask(task.id)}>
+                                    Remove task
+                                </button>
+                            </div>
+                        </div>
+                    );
+                })}
             </div>
         );
     };
 
+    // Read-only: the inputs of a contributed instance ARE the sample assets.
+    const renderInstanceInputsSummary = () => (
+        <div className="create-section">
+            <h4 style={{ margin: 0 }}>Instance Inputs</h4>
+            <p className="create-card-subtitle" style={{ margin: "4px 0 8px" }}>
+                A contributed instance is a sample, so it carries exactly the Sample Assets you defined. Edit them in the Sample Assets step.
+            </p>
+            <pre style={monoBox}>
+                {form.assets.length
+                    ? form.assets.map((a) => {
+                        const c = a.constraints || {};
+                        const lim = a.type === "AUDIO" ? `max ${c.max_duration_seconds ?? "?"}s` : `max ${c.max_words ?? "?"} words`;
+                        return `${a.name || "(unnamed)"}  ·  ${a.type}  ·  ${lim}`;
+                    }).join("\n")
+                    : "(no assets defined)"}
+            </pre>
+        </div>
+    );
+
     // ── Data Collection step ────────────────────────────────────────────────────
-    // Independent of task type: turn this on whenever contributors source,
-    // record, or adapt their own raw data instead of using an
-    // organizer-provided dataset. Applies the same way whether the
-    // competition annotates one label or several (Task Config, above).
+    // Turn this on whenever contributors source, record, or adapt their own raw
+    // data instead of using an organizer-provided dataset.
     const renderDataCollection = () => {
         const dc = form.dataCollection;
-        const isFlexible = FLEXIBLE_TASK_TYPES.includes(form.taskType);
 
         return (
             <div className="create-card">
@@ -1718,72 +1675,7 @@ function CreateCompetition({ editMode = false }) {
                     resulting dataset, legally sound.
                 </p>
 
-                <div className="section-header-row">
-                    <div>
-                        <h4 style={{ margin: 0 }}>Instance Inputs</h4>
-                        <p className="create-card-subtitle" style={{ margin: 0 }}>
-                            {isFlexible
-                                ? "Define every input a contributed instance carries. You can add more than one input of the same type — e.g. two text fields, or a text field plus an audio clip."
-                                : 'Fixed by the task type you picked in Task Config. Choose "Custom / Personalized Competition" or "Multi-Task / Multimodal Annotation" if you need to define these yourself.'}
-                        </p>
-                    </div>
-                    {isFlexible && (
-                        <button type="button" className="soft-action-btn" onClick={addInput}>
-                            + Add Input
-                        </button>
-                    )}
-                </div>
-                <ErrorMessage name="inputs" />
-
-                {(dc.inputs || []).map((inp, idx) => (
-                    <div key={inp.id} className="inner-panel">
-                        <div className="create-two-col">
-                            <div className="create-section">
-                                <label>Input {idx + 1} Name <span className="required-star">*</span></label>
-                                <input
-                                    className={errors[`inputName-${inp.id}`] ? "input-error" : ""}
-                                    type="text"
-                                    placeholder="e.g., Question, Context Passage, Audio Clip"
-                                    value={inp.name}
-                                    disabled={inp.locked}
-                                    onChange={(e) => updateInput(inp.id, "name", e.target.value)}
-                                />
-                                <ErrorMessage name={`inputName-${inp.id}`} />
-                            </div>
-                            <div className="create-section">
-                                <label>Type <span className="required-star">*</span></label>
-                                {inp.locked ? (
-                                    <input type="text" value={MODALITY_OPTIONS.find((o) => o.value === inp.modality)?.label || inp.modality} disabled />
-                                ) : (
-                                    <select value={inp.modality} onChange={(e) => updateInput(inp.id, "modality", e.target.value)}>
-                                        {MODALITY_OPTIONS.map((opt) => (
-                                            <option key={opt.value} value={opt.value}>{opt.label}</option>
-                                        ))}
-                                    </select>
-                                )}
-                            </div>
-                        </div>
-                        <div className="create-two-col">
-                            <div className="create-section">
-                                <label>Max Length ({inp.modality === "audio" ? "seconds" : "words"}) <span className="required-star">*</span></label>
-                                <input
-                                    className={errors[`inputLength-${inp.id}`] ? "input-error" : ""}
-                                    type="number" min="1"
-                                    value={inp.maxLength}
-                                    onChange={(e) => updateInput(inp.id, "maxLength", parseFloat(e.target.value) || 0)}
-                                />
-                                <ErrorMessage name={`inputLength-${inp.id}`} />
-                            </div>
-                            {isFlexible && (dc.inputs || []).length > 1 && (
-                                <div className="create-section" style={{ justifyContent: "flex-end" }}>
-                                    <button type="button" className="remove-btn" onClick={() => removeInput(inp.id)}>
-                                        Remove Input
-                                    </button>
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                ))}
+                {renderInstanceInputsSummary()}
 
                 <div className="create-section">
                     <label>Allowed Data Sources <span className="required-star">*</span></label>
@@ -2491,7 +2383,8 @@ function CreateCompetition({ editMode = false }) {
     const renderCurrentStep = () => {
         switch (wizardSteps[currentStep]?.key) {
             case "basic": return renderBasicInfo();
-            case "taskConfig": return renderTaskConfig();
+            case "assets": return renderAssets();
+            case "tasks": return renderTasks();
             case "dataCollection": return renderDataCollection();
             case "tracks": return renderTracks();
             case "phases": return renderPhases();
