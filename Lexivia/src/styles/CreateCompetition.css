@@ -191,11 +191,7 @@
 
 .create-section input,
 .create-section select,
-.create-section textarea,
-.milestone-box input,
-.extra-milestone-item input,
-.dataset-editor input,
-.dataset-editor select {
+.create-section textarea {
   width: 100%;
   border: 1px solid #e0e2e8;
   background: #f7f8fa;
@@ -210,11 +206,7 @@
 
 .create-section input:focus,
 .create-section select:focus,
-.create-section textarea:focus,
-.milestone-box input:focus,
-.extra-milestone-item input:focus,
-.dataset-editor input:focus,
-.dataset-editor select:focus {
+.create-section textarea:focus {
   border-color: #2d5cf6;
   background: #fff;
 }
@@ -448,115 +440,6 @@
   background: #2d5cf6;
 }
 
-.dataset-guidelines-box {
-  border: 1.5px solid #cfd8f8;
-  background: #e8edfb;
-  border-radius: 13px;
-  padding: 18px;
-  margin-bottom: 20px;
-}
-
-.dataset-guidelines-box h4 {
-  margin: 0 0 8px;
-  color: #2547c0;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.dataset-guidelines-box p {
-  margin: 0;
-  color: #2547c0;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.empty-datasets-box {
-  min-height: 240px;
-  border: 2px dashed #d4d8e4;
-  border-radius: 13px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  gap: 10px;
-  text-align: center;
-  padding: 28px;
-}
-
-.upload-icon {
-  font-size: 36px;
-  color: #bbb;
-}
-
-.empty-datasets-box h4 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  color: #1a1c20;
-}
-
-.empty-datasets-box p {
-  margin: 0 0 10px;
-  color: #888;
-  font-size: 13px;
-}
-
-.dataset-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.dataset-editor {
-  border: 1px solid #eaeaea;
-  background: #f7f8fa;
-  border-radius: 13px;
-  padding: 16px;
-}
-
-.milestone-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
-  margin-bottom: 16px;
-}
-
-.milestone-box {
-  border: 1.5px solid #e0e2e8;
-  background: #ffffff;
-  border-radius: 13px;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.milestone-box strong {
-  font-size: 13.5px;
-  color: #1a1c20;
-}
-
-.milestone-box span {
-  color: #888;
-  font-size: 13px;
-}
-
-.extra-milestones {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.extra-milestone-item {
-  border: 1px solid #eaeaea;
-  border-radius: 10px;
-  padding: 12px 14px;
-  display: grid;
-  grid-template-columns: 1.3fr 1fr auto;
-  gap: 10px;
-  align-items: center;
-}
-
 .remove-btn {
   height: 36px;
   border: 1.5px solid #f5c6c6;
@@ -747,9 +630,7 @@
 @media (max-width: 800px) {
   .create-two-col,
   .create-three-col,
-  .milestone-grid,
-  .skills-grid,
-  .extra-milestone-item {
+  .skills-grid {
     grid-template-columns: 1fr;
   }
 

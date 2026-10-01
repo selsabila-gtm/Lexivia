@@ -712,7 +712,7 @@ function CompetitionDetails() {
                                 </section>
 
                                 {phases.length > 0 ? (
-                                    <section className="side-card milestones-card">
+                                    <section className="side-card timeline-card">
                                         <h3>PHASES</h3>
 
                                         {phases
@@ -720,7 +720,7 @@ function CompetitionDetails() {
                                             .sort((a, b) => (a.order || 0) - (b.order || 0))
                                             .map((phase, idx) => (
                                                 <div
-                                                    className={`milestone${idx === 0 ? " active" : ""}`}
+                                                    className={`timeline-item${idx === 0 ? " active" : ""}`}
                                                     key={phase.id || phase.name}
                                                 >
                                                     <span></span>
@@ -737,10 +737,10 @@ function CompetitionDetails() {
                                             ))}
                                     </section>
                                 ) : (competition.validation_date || competition.freeze_date) ? (
-                                    <section className="side-card milestones-card">
+                                    <section className="side-card timeline-card">
                                         <h3>TIMELINE</h3>
 
-                                        <div className="milestone active">
+                                        <div className="timeline-item active">
                                             <span></span>
                                             <div>
                                                 <b>Submissions Open</b>
@@ -749,7 +749,7 @@ function CompetitionDetails() {
                                         </div>
 
                                         {competition.validation_date && (
-                                            <div className="milestone">
+                                            <div className="timeline-item">
                                                 <span></span>
                                                 <div>
                                                     <b>Model Validation Cutoff</b>
@@ -759,7 +759,7 @@ function CompetitionDetails() {
                                         )}
 
                                         {competition.freeze_date && (
-                                            <div className="milestone">
+                                            <div className="timeline-item">
                                                 <span></span>
                                                 <div>
                                                     <b>Final Leaderboard Freeze</b>
@@ -768,7 +768,7 @@ function CompetitionDetails() {
                                             </div>
                                         )}
 
-                                        <div className="milestone">
+                                        <div className="timeline-item">
                                             <span></span>
                                             <div>
                                                 <b>Competition End</b>
@@ -787,7 +787,7 @@ function CompetitionDetails() {
                                 </section>
 
                                 {competition.tracks_enabled && (
-                                    <section className="side-card milestones-card">
+                                    <section className="side-card timeline-card">
                                         <h3>TRACKS</h3>
 
                                         {tracksLoading && <p className="overview-text">Loading tracks…</p>}
@@ -797,7 +797,7 @@ function CompetitionDetails() {
                                         )}
 
                                         {tracks.map((t) => (
-                                            <div className="milestone" key={t.id}>
+                                            <div className="timeline-item" key={t.id}>
                                                 <span></span>
                                                 <div>
                                                     <b>

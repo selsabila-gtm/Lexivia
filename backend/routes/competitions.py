@@ -19,9 +19,9 @@ can turn on exactly what it needs, without a fixed competition "template":
   - Tracks: split participants into fair comparison groups, each with a
     minimum team count. Config: task_config["tracks"], validated by
     validate_tracks_config() when tracks_enabled=True.
-  - Phases: an ordered, named timeline replacing the flat start/end date +
-    milestones. Config: task_config["phases"], validated by
-    validate_phases_config() when phases_enabled=True.
+  - Phases: an ordered, named timeline replacing the flat start/end date pair.
+    Config: task_config["phases"], validated by validate_phases_config() when
+    phases_enabled=True.
   - Data Collection: participants source, record, or adapt their own raw data
     (instead of an organizer-provided dataset), under format limits, allowed
     sources, an annotation protocol (annotators per instance + adjudication),
@@ -327,7 +327,7 @@ def validate_tracks_config(tracks: list):
 
 def validate_phases_config(phases: list):
     """
-    An ordered, named timeline replacing the flat start/end date + milestones.
+    An ordered, named timeline replacing the flat start/end date pair.
     Runs whenever phases_enabled=True.
     """
     if not phases:
@@ -441,7 +441,6 @@ def build_competition_record(data: CompetitionCreateIn, is_draft: bool) -> Compe
         require_code_sharing=data.require_code_sharing,
         additional_rules=data.additional_rules,
         complexity_level=data.complexity_level,
-        milestones_json=json.dumps(data.milestones or []),
         validation_date=data.validation_date,
         freeze_date=data.freeze_date,
         dataset_config=json.dumps(config_to_store),
@@ -1935,7 +1934,6 @@ def update_competition(
     competition.additional_rules = data.additional_rules
 
     competition.complexity_level = data.complexity_level
-    competition.milestones_json = json.dumps(data.milestones or [])
 
     competition.validation_date = data.validation_date
     competition.freeze_date = data.freeze_date

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
 
 class UserCreate(BaseModel):
@@ -39,7 +39,6 @@ class CompetitionOut(BaseModel):
     additional_rules: str | None = None
 
     complexity_level: int | None = None
-    milestones_json: str | None = None
     validation_date: str | None = None
     freeze_date: str | None = None
 
@@ -72,7 +71,6 @@ class CompetitionCreateIn(BaseModel):
     additional_rules: Optional[str] = None
 
     complexity_level: Optional[int] = None
-    milestones: List[Dict[str, Any]] = []
     validation_date: Optional[str] = None
     freeze_date: Optional[str] = None
     task_config: Optional[dict] = None

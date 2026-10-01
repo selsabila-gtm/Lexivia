@@ -5,16 +5,6 @@ import "../styles/OrganizerDashboard.css";
 
 const API = "http://127.0.0.1:8000";
 
-function safeJson(value, fallback = []) {
-    try {
-        if (!value) return fallback;
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : fallback;
-    } catch {
-        return fallback;
-    }
-}
-
 function money(value) {
     if (value === null || value === undefined || value === "") return "TBD";
     return `$${Number(value).toLocaleString()}`;
@@ -414,15 +404,26 @@ function OrganizerDashboard() {
         return () => clearInterval(interval);
     }, [competitionId, token]);
 
-    const milestones = useMemo(() => {
-        const extra = safeJson(competition?.milestones_json, []);
+    const timelineItems = useMemo(() => {
+        const phases = competition?.phases_enabled ? (competition?.task_config?.phases || []) : [];
+
+        if (phases.length > 0) {
+            return phases
+                .slice()
+                .sort((a, b) => (a.order || 0) - (b.order || 0))
+                .map((phase) => ({
+                    title: phase.name,
+                    detail: phase.durationDays
+                        ? `${phase.durationDays} day${phase.durationDays === 1 ? "" : "s"}`
+                        : "Duration not set",
+                }));
+        }
 
         return [
-            { title: "Submission Open", date: competition?.start_date },
-            { title: "Model Validation", date: competition?.validation_date },
-            { title: "Final Leaderboard", date: competition?.freeze_date },
-            { title: "Competition End", date: competition?.end_date },
-            ...extra,
+            { title: "Submission Open", detail: competition?.start_date || "Not set" },
+            { title: "Model Validation", detail: competition?.validation_date || "Not set" },
+            { title: "Final Leaderboard", detail: competition?.freeze_date || "Not set" },
+            { title: "Competition End", detail: competition?.end_date || "Not set" },
         ];
     }, [competition]);
 
@@ -536,11 +537,11 @@ function OrganizerDashboard() {
                             </div>
 
                             <div>
-                                <h4>Key Milestones</h4>
+                                <h4>{competition.phases_enabled ? "Phases" : "Timeline"}</h4>
 
-                                {milestones.map((item, index) => (
+                                {timelineItems.map((item, index) => (
                                     <p key={index}>
-                                        ✓ {item.title} - {item.date || "Not set"}
+                                        ✓ {item.title} - {item.detail}
                                     </p>
                                 ))}
                             </div>

@@ -41,7 +41,6 @@ class Competition(Base):
     additional_rules = Column(Text, nullable=True)
 
     complexity_level = Column(Integer, nullable=True)
-    milestones_json = Column(Text, nullable=True)
     validation_date = Column(String, nullable=True)
     freeze_date = Column(String, nullable=True)
 

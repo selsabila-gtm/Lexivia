@@ -393,13 +393,13 @@
   color: #2d5cf6;
 }
 
-.milestone {
+.timeline-item {
   display: flex;
   gap: 12px;
   margin: 14px 0;
 }
 
-.milestone span {
+.timeline-item span {
   width: 10px;
   height: 10px;
   background: #eaeaea;
@@ -408,17 +408,17 @@
   flex-shrink: 0;
 }
 
-.milestone.active span {
+.timeline-item.active span {
   background: #2d5cf6;
 }
 
-.milestone b {
+.timeline-item b {
   display: block;
   font-size: 13.5px;
   color: #1a1c20;
 }
 
-.milestone p {
+.timeline-item p {
   margin: 3px 0 0;
   color: #aaa;
   font-size: 11.5px;

@@ -308,7 +308,6 @@ const initialForm = {
     publicTestFraction: 20,
     winnersPerTrack: 1,
 
-    datasets: [],
     validationDate: "",
     freezeDate: "",
 };
@@ -423,7 +422,6 @@ function mapCompetitionToForm(c) {
         publicTestFraction: evalCfg.public_test_fraction ?? 20,
         winnersPerTrack: evalCfg.winners_per_track ?? 1,
 
-        datasets: [],
         validationDate: c.validation_date || "",
         freezeDate: c.freeze_date || "",
     };
@@ -740,31 +738,6 @@ function CreateCompetition({ editMode = false }) {
         });
     };
 
-    const addDataset = () => {
-        setForm((prev) => ({
-            ...prev,
-            datasets: [...prev.datasets, { id: Date.now(), name: "", type: "", visibility: "Private" }],
-        }));
-    };
-
-    const updateDataset = (id, field, value) => {
-        setForm((prev) => ({
-            ...prev,
-            datasets: prev.datasets.map((item) =>
-                item.id === id ? { ...item, [field]: value } : item
-            ),
-        }));
-        clearFieldError(`datasetName-${id}`);
-        clearFieldError(`datasetType-${id}`);
-    };
-
-    const removeDataset = (id) => {
-        setForm((prev) => ({
-            ...prev,
-            datasets: prev.datasets.filter((item) => item.id !== id),
-        }));
-    };
-
     const validateStep = (step = currentStep) => {
         const nextErrors = {};
         const key = wizardSteps[step]?.key;
@@ -892,15 +865,6 @@ function CreateCompetition({ editMode = false }) {
                 nextErrors.mergeDeadline = "Merge deadline cannot be before start date.";
             if (form.mergeDeadline && form.endDate && new Date(form.mergeDeadline) > new Date(form.endDate))
                 nextErrors.mergeDeadline = "Merge deadline cannot be after end date.";
-        }
-
-        if (key === "datasets") {
-            form.datasets.forEach((dataset, index) => {
-                if (!dataset.name.trim())
-                    nextErrors[`datasetName-${dataset.id}`] = `Dataset ${index + 1} name is required.`;
-                if (!dataset.type.trim())
-                    nextErrors[`datasetType-${dataset.id}`] = `Dataset ${index + 1} type is required.`;
-            });
         }
 
         if (key === "evaluation" && !form.phasesEnabled) {
@@ -2520,14 +2484,7 @@ function CreateCompetition({ editMode = false }) {
         }
 
         return (
-            <DatasetSection
-                competitionId={savedCompetitionId}
-                datasets={form.datasets}
-                errors={errors}
-                addDataset={addDataset}
-                updateDataset={updateDataset}
-                removeDataset={removeDataset}
-            />
+            <DatasetSection competitionId={savedCompetitionId} />
         );
     };
 
