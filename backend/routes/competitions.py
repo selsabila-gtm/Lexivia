@@ -230,6 +230,7 @@ def competition_display_dict(competition: Competition) -> dict:
 
 def delete_competition_related_rows(db: Session, competition_id: str):
     # Generic structure, children first (annotations/sample_assets -> samples/tasks/components)
+    db.execute(text("DELETE FROM sample_assignments WHERE competition_id = :cid"), {"cid": competition_id})
     db.execute(text("DELETE FROM annotations WHERE sample_id IN (SELECT id FROM samples WHERE competition_id = :cid)"), {"cid": competition_id})
     db.execute(text("DELETE FROM sample_assets WHERE sample_id IN (SELECT id FROM samples WHERE competition_id = :cid)"), {"cid": competition_id})
     db.execute(text("DELETE FROM samples WHERE competition_id = :cid"), {"cid": competition_id})

@@ -14,6 +14,7 @@ import CompetitionDetails from "./pages/CompetitionDetails";
 import TeamsPage from "./pages/teams/TeamsPage";
 import TeamDetailPage from "./pages/teams/TeamDetailPage";
 import DataCollection from "./pages/DataCollection";
+import DataAnnotation from "./pages/DataAnnotation";
 import DatasetHub from "./pages/Datasethub";
 import Sidebar from "./components/Sidebar";
 import Topbar from "./components/Topbar";
@@ -196,6 +197,11 @@ function App() {
           <Route
             path="/competitions/:competitionId/data-collection"
             element={<DataCollection />}
+          />
+
+          <Route
+            path="/competitions/:id/data-annotation"
+            element={<DataAnnotation />}
           />
 
           <Route

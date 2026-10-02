@@ -26,6 +26,10 @@ Target model
     SAMPLE       -> whole sample (ref = None)
     TASK_OUTPUT  -> ref = key of another task (implicit dependency)
 
+Every task type also declares the `answer` shape an annotator gives
+("labels" | "spans" | "text" | "qa"), which drives the annotation form, value
+validation and how agreement between annotators is measured.
+
 Every task type declares what it `accepts` as input ("text", "audio",
 "sample") and what it `produces` ("text", "label", "labels", "spans"). A task
 targeting TASK_OUTPUT is only valid if the producer's output kind is accepted.
@@ -112,6 +116,7 @@ TASK_TYPES: dict[str, dict] = {
     "TRANSCRIPTION": {
         "label": "Transcription",
         "description": "Write down what is said in an audio clip.",
+        "answer": "text",
         "accepts": ["audio"], "produces": "text",
         "fields": [
             _f("max_words", "Maximum words", "integer", min=1),
@@ -123,6 +128,7 @@ TASK_TYPES: dict[str, dict] = {
     "CLASSIFICATION": {
         "label": "Classification",
         "description": "Pick one label, or several, for the target.",
+        "answer": "labels",
         "accepts": ["text", "audio", "sample"], "produces": "label",
         "fields": [
             _labels_field(),
@@ -138,6 +144,7 @@ TASK_TYPES: dict[str, dict] = {
         "label": "Span annotation",
         "description": "Mark labelled spans: character ranges in text (e.g. entities) "
                        "or time ranges in audio (e.g. speakers, events).",
+        "answer": "spans",
         "accepts": ["text", "audio"], "produces": "spans",
         "fields": [
             _f("span_labels", "Span labels", "string_list", required=True, min_items=1,
@@ -148,6 +155,7 @@ TASK_TYPES: dict[str, dict] = {
     "TRANSLATION": {
         "label": "Translation",
         "description": "Translate text into another language.",
+        "answer": "text",
         "accepts": ["text"], "produces": "text",
         "fields": [
             _f("source_language", "Source language", "string", required=True, placeholder="e.g. en"),
@@ -158,6 +166,7 @@ TASK_TYPES: dict[str, dict] = {
     "SUMMARIZATION": {
         "label": "Summarization",
         "description": "Write a short summary of the target.",
+        "answer": "text",
         "accepts": ["text", "sample"], "produces": "text",
         "fields": [
             _f("min_words", "Minimum words", "integer", min=0),
@@ -168,6 +177,7 @@ TASK_TYPES: dict[str, dict] = {
     "QUESTION_ANSWERING": {
         "label": "Question answering",
         "description": "Answer a question about the target.",
+        "answer": "qa",
         "accepts": ["text", "sample"], "produces": "text",
         "fields": [
             _f("qa_type", "Answer type", "select", required=True, default="extractive",
@@ -178,6 +188,7 @@ TASK_TYPES: dict[str, dict] = {
     "FREE_TEXT": {
         "label": "Free-text annotation",
         "description": "Write any free-form text about the target.",
+        "answer": "text",
         "accepts": ["text", "audio", "sample"], "produces": "text",
         "fields": [
             _f("max_words", "Maximum words", "integer", min=1),
@@ -218,7 +229,8 @@ def registry_payload() -> dict:
         ],
         "task_types": [
             {"value": k, "label": v["label"], "description": v["description"],
-             "accepts": v["accepts"], "produces": v["produces"], "fields": v["fields"]}
+             "accepts": v["accepts"], "produces": v["produces"],
+             "answer": v["answer"], "fields": v["fields"]}
             for k, v in TASK_TYPES.items()
         ],
         "target_types": list(TARGET_TYPES),

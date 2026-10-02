@@ -337,3 +337,30 @@ class Annotation(Base):
     created_at = Column(String, default=lambda: datetime.utcnow().isoformat())
 
     sample = relationship("Sample", back_populates="annotations")
+
+
+
+class SampleAssignment(Base):
+    """
+    One annotator <-> one sample. Created automatically when the annotator is
+    handed the sample; holds that annotator's submission status. Annotation rows
+    stay separate (one per sample/task/annotator), so annotators never overwrite
+    each other.
+
+    status: ASSIGNED (working on it) | PARTIAL | COMPLETED | SKIPPED
+    role:   REGULAR | CONFLICT_RESOLUTION (an extra annotator added to break a tie;
+            this never changes the organizer's required-annotators value)
+    """
+    __tablename__ = "sample_assignments"
+    __table_args__ = (UniqueConstraint("sample_id", "annotator_id", name="uq_assignment_once"),)
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    competition_id = Column(String, ForeignKey("competitions.id", ondelete="CASCADE"), nullable=False, index=True)
+    sample_id = Column(String, ForeignKey("samples.id", ondelete="CASCADE"), nullable=False, index=True)
+    annotator_id = Column(String, ForeignKey("user_profiles.user_id"), nullable=False, index=True)
+    status = Column(String, default="ASSIGNED")
+    role = Column(String, default="REGULAR")
+    task_keys = Column(JSON, default=list)          # tasks this annotator was asked to fill
+    assigned_at = Column(String, default=lambda: datetime.utcnow().isoformat())
+    expires_at = Column(String, nullable=True)      # lease while ASSIGNED
+    submitted_at = Column(String, nullable=True)

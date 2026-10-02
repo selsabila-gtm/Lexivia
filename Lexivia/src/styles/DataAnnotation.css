@@ -1,0 +1,62 @@
+/* DataAnnotation.css — additions for the annotation workspace.
+   The page shell (dc-shell, dc-main, dc-widget, dc-label-tag …) comes from DataCollection.css. */
+
+.da-muted { color: #6f778c; font-size: 12px; margin: 0; }
+.da-section { margin: 22px 0 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: #6f778c; }
+
+/* statistics */
+.da-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.da-stat { background: #fff; border: 1px solid #e8edf8; border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
+.da-stat-num { font-size: 22px; font-weight: 800; color: #1b2340; }
+.da-stat-lbl { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; color: #6f778c; text-transform: uppercase; }
+.da-stat-ok .da-stat-num { color: #15803d; }
+.da-stat-warn .da-stat-num { color: #b45309; }
+.da-stat-bad .da-stat-num { color: #b91c1c; }
+
+/* sample status pill */
+.da-status { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; background: #f3f4f6; color: #4b5563; }
+.da-status-PARTIAL { background: #fef3c7; color: #92400e; }
+.da-status-COMPLETED { background: #dcfce7; color: #166534; }
+.da-status-CONFLICT, .da-status-CONFLICT_RESOLUTION { background: #fee2e2; color: #991b1b; }
+
+/* conflict-resolution banner */
+.da-conflict { background: #fff7ed; border: 1.5px solid #fdba74; border-radius: 12px; padding: 14px 16px; margin: 4px 0 8px; color: #7c2d12; font-size: 13px; }
+.da-conflict p { margin: 0 0 8px; }
+.da-conflict-title { font-weight: 800; font-size: 14px; }
+.da-conflict-task { background: #fff; border-radius: 8px; padding: 8px 12px; margin: 6px 0 10px; }
+.da-conflict-task-name { font-weight: 700; margin-bottom: 4px !important; }
+.da-conflict-row { margin: 2px 0 !important; font-size: 13px; }
+
+/* collected data (read-only) */
+.da-asset { margin-bottom: 14px; }
+.da-asset-text { background: #f7f8fc; border: 1px solid #e8edf8; border-radius: 10px; padding: 12px 14px; font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
+.da-selectable { user-select: text; cursor: text; }
+
+/* tasks */
+.da-task { border: 1px solid #e8edf8; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; background: #fff; }
+.da-task-conflict { border-color: #fdba74; background: #fffaf5; }
+.da-task-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.da-task-name { font-weight: 700; font-size: 14px; color: #1b2340; }
+.da-instructions { font-size: 12px; background: #eff6ff; color: #1e40af; border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; }
+.da-badge { font-size: 10px; font-weight: 700; border-radius: 6px; padding: 1px 7px; }
+.da-badge-conflict { background: #fee2e2; color: #991b1b; }
+.da-badge-done { background: #dcfce7; color: #166534; }
+
+/* spans */
+.da-mark { border-bottom: 2px solid; border-radius: 3px; padding: 1px 2px; }
+.da-mark::after { content: attr(data-label); font-size: 9px; font-weight: 800; margin-left: 4px; letter-spacing: 0.05em; opacity: 0.8; }
+.da-chip { display: inline-flex; align-items: center; gap: 6px; border: 1.5px solid #d1d5db; border-radius: 8px; padding: 3px 4px 3px 9px; font-size: 12px; background: #fff; }
+.da-chip button { border: none; background: transparent; color: #ef4444; cursor: pointer; font-size: 15px; line-height: 1; padding: 0 4px; }
+.da-timeline { position: relative; height: 34px; background: #f7f8fc; border: 1px solid #e8edf8; border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
+.da-timeline-span { position: absolute; top: 5px; bottom: 5px; border: 1.5px solid; border-radius: 4px; min-width: 4px; }
+
+/* footer + empty state */
+.da-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 18px; }
+.da-empty { text-align: center; padding: 48px 24px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.da-empty-title { font-size: 18px; font-weight: 800; color: #1b2340; margin: 0; }
+
+/* side panel */
+.da-mini-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin-top: 12px; font-size: 12px; color: #6f778c; }
+.da-mini-grid b { color: #1b2340; margin-left: 4px; }
+.da-annotator { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid #f0f2f9; }
+.da-annotator-sub { display: block; font-size: 11px; color: #6f778c; }
