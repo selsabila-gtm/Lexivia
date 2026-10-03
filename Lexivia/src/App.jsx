@@ -35,10 +35,10 @@ import ExperimentRegistry from "./pages/ExperimentRegistry";
 import Leaderboard from "./pages/leaderboard";
 import SetPassword from "./pages/SetPassword";
 import CompetitionTopbar from "./components/CompetitionTopbar";
-// In App.jsx, change:
-import DatasetHubGlobal from "./pages/DatasetHubGlobal";
 
-// And the route:
+import DatasetHubGlobal from "./pages/DatasetHubglobal";
+import DatasetDetails from "./pages/DatasetDetails";
+
 
 
 import "./index.css";
@@ -175,6 +175,7 @@ function App() {
 
           
           <Route path="/datasets" element={<DatasetHubGlobal />} />
+          <Route path="/datasets/:competitionId" element={<DatasetDetails />} />
 
           <Route
             path="/resources"
